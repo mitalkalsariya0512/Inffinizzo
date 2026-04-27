@@ -141,73 +141,208 @@ const DEFAULT_SOCIAL_MEDIA = [
 ];
 
 // ─── CSV PARSER UTILITIES ───
-const parseCSV = (text) => {
-  const lines = text.split('\n').filter(l => l.trim() !== '' && l.replace(/,/g, '').trim() !== '');
-  if (lines.length === 0) return [];
-  let headerIdx = lines.findIndex(l => l.split(',').filter(c => c.trim() !== '').length >= 3);
-  if (headerIdx === -1) headerIdx = 0;
-  let headers = lines[headerIdx].split(',').map(h => h.trim().replace(/"/g, '').replace(/\n/g, ' '));
-  if (headerIdx + 1 < lines.length) {
-    const subHeaders = lines[headerIdx + 1].split(',').map(h => h.trim().replace(/"/g, '').replace(/\n/g, ' '));
-    const textCount = subHeaders.filter(h => h !== '' && isNaN(Number(h))).length;
-    if (textCount >= 2) { headers = headers.map((h, i) => subHeaders[i] ? (h ? h + " " + subHeaders[i] : subHeaders[i]) : h); headerIdx++; }
+const splitCSVLine = (line) => {
+  const result = [];
+  let current = '';
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"') { inQuotes = !inQuotes; }
+    else if (ch === ',' && !inQuotes) { result.push(current.trim()); current = ''; }
+    else { current += ch; }
   }
-  return lines.slice(headerIdx + 1).map(line => {
-    const values = line.split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/);
-    const obj = {};
-    headers.forEach((h, i) => { let val = values[i] ? values[i].trim().replace(/"/g, '') : ""; obj[h] = isNaN(Number(val)) || val === "" ? val : Number(val); });
-    return obj;
-  });
+  result.push(current.trim());
+  return result;
+};
+
+const toNum = (v) => { const n = parseFloat(v); return isNaN(n) ? 0 : n; };
+const toStr = (v) => (v && v !== 'undefined' && v !== 'null') ? String(v).trim() : '';
+
+// Smart fetch with CORS fallback
+const smartFetch = async (url) => {
+  try {
+    const res = await fetch(url);
+    if (res.ok) {
+      const text = await res.text();
+      if (text && text.length > 20 && !text.includes('<!DOCTYPE') && !text.includes('<html')) return text;
+    }
+  } catch(e) { console.log("Direct fetch failed, trying proxy..."); }
+  // Try CORS proxy fallback
+  try {
+    const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(url)}`;
+    const res = await fetch(proxyUrl);
+    if (res.ok) {
+      const text = await res.text();
+      if (text && text.length > 20 && !text.includes('<!DOCTYPE')) return text;
+    }
+  } catch(e) { console.log("Proxy fetch also failed"); }
+  return null;
+};
+
+// Parse Client Report by column position (matches your sheet structure)
+const parseClientReport = (text) => {
+  if (!text) return [];
+  const lines = text.split('\n').filter(l => l.trim() !== '');
+  const results = [];
+  // Find the header row - look for row containing "Client" or "SMM"
+  let dataStart = 0;
+  for (let i = 0; i < Math.min(10, lines.length); i++) {
+    const lower = lines[i].toLowerCase();
+    if (lower.includes('client') && (lower.includes('smm') || lower.includes('person') || lower.includes('target'))) {
+      dataStart = i + 1;
+      // Check if next row is also a header (sub-header)
+      if (dataStart < lines.length) {
+        const nextCols = splitCSVLine(lines[dataStart]);
+        const textCount = nextCols.filter(c => c !== '' && isNaN(Number(c))).length;
+        if (textCount >= 3) dataStart++;
+      }
+      break;
+    }
+  }
+  for (let i = dataStart; i < lines.length; i++) {
+    const cols = splitCSVLine(lines[i]);
+    // Try to find client name - look for a non-empty text column
+    const client = toStr(cols[3]) || toStr(cols[2]) || toStr(cols[1]) || toStr(cols[0]);
+    if (!client || client.toLowerCase() === 'total' || client.toLowerCase() === 'none') continue;
+    // Map by position based on your sheet structure
+    results.push({
+      client: client,
+      person: toStr(cols[1]) || "Unassigned",
+      smm: toStr(cols[2]) || "Unassigned",
+      posts: toNum(cols[4]),
+      videos: toNum(cols[5]),
+      target: toNum(cols[6]),
+      total: toNum(cols[7]),
+      status: toStr(cols[8]) || "Pending",
+      pending: toNum(cols[10]) || toNum(cols[9]),
+      remark: toStr(cols[9]),
+    });
+  }
+  console.log("[CRM Sync] Client Report parsed:", results.length, "clients", results.slice(0,2));
+  return results;
+};
+
+// Parse Stock by column position
+const parseStockSheet = (text) => {
+  if (!text) return [];
+  const lines = text.split('\n').filter(l => l.trim() !== '');
+  const results = [];
+  let dataStart = 0;
+  for (let i = 0; i < Math.min(10, lines.length); i++) {
+    const lower = lines[i].toLowerCase();
+    if (lower.includes('client') && (lower.includes('target') || lower.includes('stock') || lower.includes('priority'))) {
+      dataStart = i + 1;
+      if (dataStart < lines.length) {
+        const nextCols = splitCSVLine(lines[dataStart]);
+        const textCount = nextCols.filter(c => c !== '' && isNaN(Number(c))).length;
+        if (textCount >= 2) dataStart++;
+      }
+      break;
+    }
+  }
+  for (let i = dataStart; i < lines.length; i++) {
+    const cols = splitCSVLine(lines[i]);
+    const client = toStr(cols[3]) || toStr(cols[2]) || toStr(cols[1]) || toStr(cols[0]);
+    if (!client || client.toLowerCase() === 'total' || client.toLowerCase() === 'none') continue;
+    let priority = toStr(cols[22]) || toStr(cols[21]) || "SAFE";
+    priority = priority.replace(/[🟢🔴🟡\s]/g, '').trim() || "SAFE";
+    results.push({
+      client: client,
+      postRemaining: toNum(cols[9]),
+      videoRemaining: toNum(cols[16]),
+      totalApproved: toNum(cols[19]),
+      totalUploaded: toNum(cols[20]),
+      totalTarget: toNum(cols[18]),
+      totalRemaining: toNum(cols[21]),
+      priority: priority,
+      toProduce: toNum(cols[23]),
+    });
+  }
+  console.log("[CRM Sync] Stock parsed:", results.length, "clients", results.slice(0,2));
+  return results;
+};
+
+// Parse Shoot Schedule
+const parseShootSheet = (text) => {
+  if (!text) return [];
+  const lines = text.split('\n').filter(l => l.trim() !== '');
+  const results = [];
+  let dataStart = 0;
+  for (let i = 0; i < Math.min(10, lines.length); i++) {
+    if (lines[i].toLowerCase().includes('client') && (lines[i].toLowerCase().includes('status') || lines[i].toLowerCase().includes('shoot'))) {
+      dataStart = i + 1; break;
+    }
+  }
+  for (let i = dataStart; i < lines.length; i++) {
+    const cols = splitCSVLine(lines[i]);
+    const client = toStr(cols[1]) || toStr(cols[0]);
+    if (!client || client.toLowerCase() === 'none') continue;
+    results.push({
+      client: client,
+      date: toStr(cols[2]) || "TBD",
+      person: toStr(cols[5]) || toStr(cols[4]) || "Unassigned",
+      type: toStr(cols[6]) || toStr(cols[3]) || "-",
+      status: toStr(cols[7]) || toStr(cols[6]) || "Pending",
+    });
+  }
+  console.log("[CRM Sync] Shoots parsed:", results.length);
+  return results;
 };
 
 const parseEditorSheet = (text) => {
+  if (!text) return [];
   const lines = text.split('\n').filter(l => l.trim() !== '');
-  const headerIdx = lines.findIndex(l => l.toLowerCase().includes('editor,client') || l.toLowerCase().includes('editor, client'));
-  if (headerIdx === -1) return [];
+  const headerIdx = lines.findIndex(l => l.toLowerCase().includes('editor') && l.toLowerCase().includes('client'));
+  if (headerIdx === -1) { console.log("[CRM Sync] Editor sheet: no header found"); return []; }
   let currentEditor = null;
   const editorsMap = {};
   for (let i = headerIdx + 2; i < lines.length; i++) {
-    const cols = lines[i].split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/).map(s => s.replace(/"/g, '').trim());
-    const editorName = cols[0]; const clientName = cols[1];
-    if (editorName && editorName.toLowerCase() === 'total') continue;
-    if (editorName && editorName.toLowerCase() === 'remark') continue;
+    const cols = splitCSVLine(lines[i]);
+    const editorName = toStr(cols[0]); const clientName = toStr(cols[1]);
+    if (editorName.toLowerCase() === 'total' || editorName.toLowerCase() === 'remark') continue;
     if (editorName && editorName !== '') {
       currentEditor = editorName;
       if (!editorsMap[currentEditor]) { editorsMap[currentEditor] = { name: currentEditor, clients: [], daily: Array(31).fill(0), total: 0, target: 0, achieved: 0, extra: 0, regularTarget: 192 }; }
     }
-    if (currentEditor && clientName && clientName.toLowerCase() !== 'monthly summary' && clientName.toLowerCase() !== 'extra') {
+    if (currentEditor && clientName && !['monthly summary','extra','total','remark',''].includes(clientName.toLowerCase())) {
       editorsMap[currentEditor].clients.push(clientName);
       const targetVal = parseInt(cols[2]);
       if (!isNaN(targetVal)) editorsMap[currentEditor].target += targetVal;
       for (let day = 0; day < 31; day++) { const val = parseInt(cols[3 + day]); if (!isNaN(val)) { editorsMap[currentEditor].daily[day] += val; editorsMap[currentEditor].total += val; editorsMap[currentEditor].achieved += val; } }
     }
   }
-  return Object.values(editorsMap);
+  const result = Object.values(editorsMap);
+  console.log("[CRM Sync] Editor sheet parsed:", result.length, "editors", result.map(e=>e.name));
+  return result;
 };
 
 const parseCalendarSheet = (text) => {
+  if (!text) return [];
   const lines = text.split('\n').filter(l => l.trim() !== '');
   const headerIdx = lines.findIndex(l => l.toLowerCase().includes('client') && l.toLowerCase().includes('target'));
   if (headerIdx === -1) return [];
   const result = [];
   for (let i = headerIdx + 2; i < lines.length; i++) {
-    const cols = lines[i].split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/).map(s => s.replace(/"/g, '').trim());
+    const cols = splitCSVLine(lines[i]);
     if (cols[0] && cols[0] !== '') { result.push({ client: cols[0], target: parseInt(cols[1]) || 0, days: cols.slice(2, 33).map(v => v !== '' ? v : null) }); }
   }
+  console.log("[CRM Sync] Calendar parsed:", result.length, "clients");
   return result;
 };
 
 const parseSocialMediaSheet = (text) => {
+  if (!text) return [];
   const lines = text.split('\n').filter(l => l.trim() !== '');
-  const headerIdx = lines.findIndex(l => l.toLowerCase().includes('editor') && l.toLowerCase().includes('smm'));
-  if (headerIdx === -1) return [];
+  const headerIdx = lines.findIndex(l => l.toLowerCase().includes('editor') && (l.toLowerCase().includes('smm') || l.toLowerCase().includes('client')));
+  if (headerIdx === -1) { console.log("[CRM Sync] SMM sheet: no header found"); return []; }
   const result = [];
   for (let i = headerIdx + 2; i < lines.length; i++) {
-    const cols = lines[i].split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/).map(s => s.replace(/"/g, '').trim());
-    if (cols[1] && cols[1] !== '') {
-      result.push({ editor: cols[0] || "Unassigned", client: cols[1], smm: cols[2] || "Unassigned", postTarget: parseInt(cols[3]) || 0, postApproved: parseInt(cols[4]) || 0, postUploaded: parseInt(cols[5]) || 0, postPending: parseInt(cols[6]) || 0, videoTarget: parseInt(cols[7]) || 0, videoApproved: parseInt(cols[8]) || 0, videoUploaded: parseInt(cols[9]) || 0, videoPending: parseInt(cols[10]) || 0, totalTarget: parseInt(cols[11]) || 0, totalUploaded: parseInt(cols[12]) || 0 });
-    }
+    const cols = splitCSVLine(lines[i]);
+    const client = toStr(cols[2]) || toStr(cols[1]);
+    if (!client || client.toLowerCase() === 'total' || client.toLowerCase() === 'none') continue;
+    result.push({ editor: toStr(cols[0]) || "Unassigned", client: client, smm: toStr(cols[1]) || toStr(cols[2]) || "Unassigned", postTarget: toNum(cols[3]), postApproved: toNum(cols[4]), postUploaded: toNum(cols[5]), postPending: toNum(cols[6]), videoTarget: toNum(cols[7]), videoApproved: toNum(cols[8]), videoUploaded: toNum(cols[9]), videoPending: toNum(cols[10]), totalTarget: toNum(cols[11]), totalUploaded: toNum(cols[12]) });
   }
+  console.log("[CRM Sync] SMM parsed:", result.length, "clients");
   return result;
 };
 
@@ -270,7 +405,42 @@ export default function App() {
   const [syncStatus, setSyncStatus] = useState({ loading: false, message: "Using saved data", error: false });
   const [initialSyncDone, setInitialSyncDone] = useState(false);
 
-  // Load saved URLs from storage on mount, then auto-sync
+  // Full sync function
+  const doFullSync = async (activeUrls, isAuto = false) => {
+    const newData = { ...data };
+    let anySuccess = false;
+    console.log("[CRM] Starting sync...");
+
+    const clientText = await smartFetch(activeUrls.clientReport);
+    if (clientText) { const r = parseClientReport(clientText); if (r.length > 0) { newData.clients = r; anySuccess = true; } }
+
+    const stockText = await smartFetch(activeUrls.stockData);
+    if (stockText) { const r = parseStockSheet(stockText); if (r.length > 0) { newData.stock = r; anySuccess = true; } }
+
+    const shootText = await smartFetch(activeUrls.shootSchedule);
+    if (shootText) { const r = parseShootSheet(shootText); if (r.length > 0) { newData.shoots = r; anySuccess = true; } }
+
+    const postText = await smartFetch(activeUrls.postTeam);
+    if (postText) { const r = parseEditorSheet(postText); if (r.length > 0) { newData.postEditors = r; anySuccess = true; } }
+
+    const videoText = await smartFetch(activeUrls.videoTeam);
+    if (videoText) { const r = parseEditorSheet(videoText); if (r.length > 0) { newData.videoEditors = r; anySuccess = true; } }
+
+    const calText = await smartFetch(activeUrls.uploadCalendar);
+    if (calText) { const r = parseCalendarSheet(calText); if (r.length > 0) { newData.uploadCalendar = r; anySuccess = true; } }
+
+    const planText = await smartFetch(activeUrls.contentPlanner);
+    if (planText) { const r = parseEditorSheet(planText); if (r.length > 0) { newData.contentPlanner = r; anySuccess = true; } }
+
+    const smmText = await smartFetch(activeUrls.socialMedia);
+    if (smmText) { const r = parseSocialMediaSheet(smmText); if (r.length > 0) { newData.socialMedia = r; anySuccess = true; } }
+
+    setData(newData);
+    console.log("[CRM] Sync done. Success:", anySuccess, "Clients:", newData.clients.length, "Stock:", newData.stock.length);
+    return anySuccess;
+  };
+
+  // Auto-sync on mount
   useEffect(() => {
     const loadAndSync = async () => {
       let activeUrls = urls;
@@ -281,48 +451,21 @@ export default function App() {
           const hasStored = Object.values(parsed).some(u => u !== "");
           if (hasStored) { activeUrls = parsed; setUrls(parsed); }
         }
-      } catch(e) { /* use hardcoded defaults */ }
-      // Try auto-sync — if it fails, gracefully fall back to defaults (green dot)
+      } catch(e) {}
       setSyncStatus({ loading: true, message: "Connecting to Google Sheets...", error: false });
-      const newData = { ...data };
-      let syncSuccess = false;
       try {
-        const testRes = await fetch(activeUrls.clientReport);
-        if (testRes.ok) {
-          const testText = await testRes.text();
-          if (testText && testText.length > 50 && !testText.includes('<!DOCTYPE')) {
-            // Sheet is published and accessible — do full sync
-            const parsed = parseCSV(testText);
-            const mapped = parsed.map(row => ({ client: row["Client "] || row["Client Name"] || row["Client"], person: row["Person"] || "Unassigned", smm: row["SMM"] || "Unassigned", posts: row["Posts"] || 0, videos: row["Videos"] || 0, target: row["Total Articles Target"] || row["Total Articles"] || row["Target"] || 0, total: row["Total"] || 0, status: row["Status"] || "Pending", pending: row["Upload Pending"] || row["Pending"] || 0 })).filter(c => c.client);
-            if (mapped.length > 0) newData.clients = mapped;
-
-            if (activeUrls.shootSchedule) { const res = await fetch(activeUrls.shootSchedule); const p = parseCSV(await res.text()); const m = p.map(row => ({ client: row["Client"] || "Unknown", date: row["Date"] || row["Day"] || "TBD", type: row["Shoot Type"] || "-", status: row["Status"] || "Pending", person: row["Assigned Person"] || row["Person"] || "Unassigned" })).filter(s => s.client && s.client !== "Unknown"); if (m.length > 0) newData.shoots = m; }
-            if (activeUrls.stockData) { const res = await fetch(activeUrls.stockData); const p = parseCSV(await res.text()); const m = p.map(row => ({ client: row["CLIENT"] || "Unknown", postRemaining: row["POST TARGET"] || row["POST"] || 0, videoRemaining: row["VIDEOS STOCK TARGET"] || row["VIDEOS STOCK"] || row["VIDEOS"] || 0, totalApproved: row["TOTAL APPROVED STOCK APPROVED"] || row["TOTAL APPROVED"] || 0, totalUploaded: row["TOTAL UPLOADED STOCK UPLOADED"] || row["TOTAL UPLOADED"] || 0, totalTarget: row["TOTAL TARGET Target"] || row["TOTAL TARGET"] || row["Target"] || 0, totalRemaining: row["TOTAL STOCK REMAINING STOCK REMAINING"] || row["TOTAL STOCK REMAINING"] || 0, priority: row["PRIORITY"] || "SAFE", toProduce: row["TOTAL STOCK TO PRODUCE STOCK TO PRODUCE"] || row["TOTAL STOCK TO PRODUCE"] || 0 })).filter(s => s.client !== "Unknown"); if (m.length > 0) newData.stock = m; }
-            if (activeUrls.postTeam) { const res = await fetch(activeUrls.postTeam); const pe = parseEditorSheet(await res.text()); if (pe.length > 0) newData.postEditors = pe; }
-            if (activeUrls.videoTeam) { const res = await fetch(activeUrls.videoTeam); const ve = parseEditorSheet(await res.text()); if (ve.length > 0) newData.videoEditors = ve; }
-            if (activeUrls.uploadCalendar) { const res = await fetch(activeUrls.uploadCalendar); const uc = parseCalendarSheet(await res.text()); if (uc.length > 0) newData.uploadCalendar = uc; }
-            if (activeUrls.contentPlanner) { const res = await fetch(activeUrls.contentPlanner); const cp = parseEditorSheet(await res.text()); if (cp.length > 0) newData.contentPlanner = cp; }
-            if (activeUrls.socialMedia) { const res = await fetch(activeUrls.socialMedia); const sm = parseSocialMediaSheet(await res.text()); if (sm.length > 0) newData.socialMedia = sm; }
-            setData(newData);
-            syncSuccess = true;
-            setSyncStatus({ loading: false, message: "Live — synced from Google Sheets", error: false });
-          } else {
-            // Sheet not published yet — use defaults gracefully
-            setSyncStatus({ loading: false, message: "Using saved data — publish sheet for live sync", error: false });
-          }
-        } else {
-          setSyncStatus({ loading: false, message: "Using saved data — publish sheet for live sync", error: false });
-        }
+        const success = await doFullSync(activeUrls, true);
+        setSyncStatus({ loading: false, message: success ? "Live — synced from Google Sheets" : "Using saved data", error: false });
       } catch (err) {
-        console.log("Auto-sync: Sheet not published yet, using defaults");
-        setSyncStatus({ loading: false, message: "Using saved data — publish sheet for live sync", error: false });
+        console.error("[CRM] Auto-sync error:", err);
+        setSyncStatus({ loading: false, message: "Using saved data", error: false });
       }
       setInitialSyncDone(true);
     };
     loadAndSync();
   }, []);
 
-  const handleUrlChange = async (e) => {
+  const handleUrlChange = (e) => {
     const { name, value } = e.target;
     const newUrls = { ...urls, [name]: value };
     setUrls(newUrls);
@@ -330,24 +473,19 @@ export default function App() {
   };
 
   const syncData = async () => {
-    setSyncStatus({ loading: true, message: "Fetching live data from Google Sheets...", error: false });
-    const newData = { ...data };
+    setSyncStatus({ loading: true, message: "Fetching live data...", error: false });
     try {
-      if (urls.clientReport) { const res = await fetch(urls.clientReport); const parsed = parseCSV(await res.text()); newData.clients = parsed.map(row => ({ client: row["Client "] || row["Client Name"] || row["Client"], person: row["Person"] || "Unassigned", smm: row["SMM"] || "Unassigned", posts: row["Posts"] || 0, videos: row["Videos"] || 0, target: row["Total Articles Target"] || row["Total Articles"] || row["Target"] || 0, total: row["Total"] || 0, status: row["Status"] || "Pending", pending: row["Upload Pending"] || row["Pending"] || 0 })).filter(c => c.client); }
-      if (urls.shootSchedule) { const res = await fetch(urls.shootSchedule); const parsed = parseCSV(await res.text()); newData.shoots = parsed.map(row => ({ client: row["Client"] || "Unknown", date: row["Date"] || row["Day"] || "TBD", type: row["Shoot Type"] || "-", status: row["Status"] || "Pending", person: row["Assigned Person"] || row["Person"] || "Unassigned" })).filter(s => s.client && s.client !== "Unknown"); }
-      if (urls.stockData) { const res = await fetch(urls.stockData); const parsed = parseCSV(await res.text()); newData.stock = parsed.map(row => ({ client: row["CLIENT"] || "Unknown", postRemaining: row["POST TARGET"] || row["POST"] || 0, videoRemaining: row["VIDEOS STOCK TARGET"] || row["VIDEOS STOCK"] || row["VIDEOS"] || 0, totalApproved: row["TOTAL APPROVED STOCK APPROVED"] || row["TOTAL APPROVED"] || 0, totalUploaded: row["TOTAL UPLOADED STOCK UPLOADED"] || row["TOTAL UPLOADED"] || 0, totalTarget: row["TOTAL TARGET Target"] || row["TOTAL TARGET"] || row["Target"] || 0, totalRemaining: row["TOTAL STOCK REMAINING STOCK REMAINING"] || row["TOTAL STOCK REMAINING"] || 0, priority: row["PRIORITY"] || "SAFE", toProduce: row["TOTAL STOCK TO PRODUCE STOCK TO PRODUCE"] || row["TOTAL STOCK TO PRODUCE"] || 0 })).filter(s => s.client !== "Unknown"); }
-      if (urls.postTeam) { const res = await fetch(urls.postTeam); const pe = parseEditorSheet(await res.text()); if (pe.length > 0) newData.postEditors = pe; }
-      if (urls.videoTeam) { const res = await fetch(urls.videoTeam); const ve = parseEditorSheet(await res.text()); if (ve.length > 0) newData.videoEditors = ve; }
-      if (urls.uploadCalendar) { const res = await fetch(urls.uploadCalendar); const uc = parseCalendarSheet(await res.text()); if (uc.length > 0) newData.uploadCalendar = uc; }
-      if (urls.contentPlanner) { const res = await fetch(urls.contentPlanner); const cp = parseEditorSheet(await res.text()); if (cp.length > 0) newData.contentPlanner = cp; }
-      if (urls.socialMedia) { const res = await fetch(urls.socialMedia); const sm = parseSocialMediaSheet(await res.text()); if (sm.length > 0) newData.socialMedia = sm; }
-      setData(newData);
-      setSyncStatus({ loading: false, message: "Sync successful! Dashboard updated.", error: false });
-      setTimeout(() => setSyncStatus({ loading: false, message: "", error: false }), 3000);
-      setActiveSection("overview");
+      const success = await doFullSync(urls);
+      if (success) {
+        setSyncStatus({ loading: false, message: "Sync successful!", error: false });
+        setTimeout(() => setSyncStatus({ loading: false, message: "Live", error: false }), 3000);
+        setActiveSection("overview");
+      } else {
+        setSyncStatus({ loading: false, message: "No data found — check sheet publish settings", error: true });
+      }
     } catch (err) {
-      console.error(err);
-      setSyncStatus({ loading: false, message: "Sync failed. Check your URLs and ensure they are published as CSV.", error: true });
+      console.error("[CRM] Sync error:", err);
+      setSyncStatus({ loading: false, message: "Sync failed — check console (F12)", error: true });
     }
   };
 
