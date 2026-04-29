@@ -158,24 +158,63 @@ const splitCSVLine = (line) => {
 const toNum = (v) => { const n = parseFloat(v); return isNaN(n) ? 0 : n; };
 const toStr = (v) => (v && v !== 'undefined' && v !== 'null') ? String(v).trim() : '';
 
-// Smart fetch with CORS fallback
+// Smart fetch — tries multiple methods for instant data
 const smartFetch = async (url) => {
+  // Method 1: Direct fetch (works if sheet is shared publicly)
   try {
-    const res = await fetch(url);
+    const res = await fetch(url, { redirect: 'follow' });
     if (res.ok) {
       const text = await res.text();
-      if (text && text.length > 20 && !text.includes('<!DOCTYPE') && !text.includes('<html')) return text;
+      if (text && text.length > 20 && !text.includes('<!DOCTYPE') && !text.includes('<html') && !text.includes('Sign in')) {
+        console.log("[CRM Fetch] Direct OK:", url.substring(0, 80), "size:", text.length);
+        return text;
+      }
     }
-  } catch(e) { console.log("Direct fetch failed, trying proxy..."); }
-  // Try CORS proxy fallback
+  } catch(e) { console.log("[CRM Fetch] Direct failed:", e.message); }
+
+  // Method 2: CORS proxy with export URL (instant, no cache)
   try {
     const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(url)}`;
     const res = await fetch(proxyUrl);
     if (res.ok) {
       const text = await res.text();
-      if (text && text.length > 20 && !text.includes('<!DOCTYPE')) return text;
+      if (text && text.length > 20 && !text.includes('<!DOCTYPE') && !text.includes('Sign in')) {
+        console.log("[CRM Fetch] CORS proxy OK:", url.substring(0, 80), "size:", text.length);
+        return text;
+      }
     }
-  } catch(e) { console.log("Proxy fetch also failed"); }
+  } catch(e) { console.log("[CRM Fetch] CORS proxy failed:", e.message); }
+
+  // Method 3: Try the /pub URL as fallback (cached but reliable)
+  try {
+    const pubUrl = url.replace('/export?format=csv&gid=', '/pub?gid=').replace(/&gid=/, '&single=true&output=csv&gid=');
+    const altUrl = url.includes('/export?') 
+      ? `https://docs.google.com/spreadsheets/d/${url.split('/d/')[1]?.split('/')[0]}/pub?gid=${url.split('gid=')[1]}&single=true&output=csv`
+      : url;
+    const res = await fetch(altUrl);
+    if (res.ok) {
+      const text = await res.text();
+      if (text && text.length > 20 && !text.includes('<!DOCTYPE') && !text.includes('Sign in')) {
+        console.log("[CRM Fetch] Pub fallback OK:", altUrl.substring(0, 80), "size:", text.length);
+        return text;
+      }
+    }
+  } catch(e) { console.log("[CRM Fetch] Pub fallback failed:", e.message); }
+
+  // Method 4: Alternative CORS proxy
+  try {
+    const proxy2 = `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
+    const res = await fetch(proxy2);
+    if (res.ok) {
+      const text = await res.text();
+      if (text && text.length > 20 && !text.includes('<!DOCTYPE') && !text.includes('Sign in')) {
+        console.log("[CRM Fetch] AllOrigins OK:", text.length);
+        return text;
+      }
+    }
+  } catch(e) {}
+
+  console.log("[CRM Fetch] All methods failed for:", url.substring(0, 80));
   return null;
 };
 
@@ -291,28 +330,95 @@ const parseShootSheet = (text) => {
 
 const parseEditorSheet = (text) => {
   if (!text) return [];
-  const lines = text.split('\n').filter(l => l.trim() !== '');
-  const headerIdx = lines.findIndex(l => l.toLowerCase().includes('editor') && l.toLowerCase().includes('client'));
-  if (headerIdx === -1) { console.log("[CRM Sync] Editor sheet: no header found"); return []; }
+  // Normalize newlines inside quoted fields, then split by actual line breaks
+  const raw = text.replace(/\r\n/g, '\n');
+  // Handle quoted fields that contain newlines
+  let cleaned = '';
+  let inQuotes = false;
+  for (let i = 0; i < raw.length; i++) {
+    const ch = raw[i];
+    if (ch === '"') { inQuotes = !inQuotes; cleaned += ch; }
+    else if (ch === '\n' && inQuotes) { cleaned += ' '; } // replace newline inside quotes with space
+    else { cleaned += ch; }
+  }
+  const lines = cleaned.split('\n').filter(l => l.trim() !== '');
+  
+  // Find header row
+  const headerIdx = lines.findIndex(l => {
+    const lower = l.toLowerCase();
+    return (lower.includes('editor') && lower.includes('client')) || (lower.includes('editor') && lower.includes('target'));
+  });
+  if (headerIdx === -1) { console.log("[CRM Sync] Editor sheet: no header found in", lines.length, "lines"); return []; }
+  
+  // Known editor names to validate against
+  const knownEditors = ['dharmesh','pradip','kushani','aashlesha','keyur','kaushik','kinjal','mandar','ronit','krushang'];
+  
   let currentEditor = null;
   const editorsMap = {};
-  for (let i = headerIdx + 2; i < lines.length; i++) {
+  
+  // Start from the row after header (skip sub-header row with day numbers)
+  for (let i = headerIdx + 1; i < lines.length; i++) {
     const cols = splitCSVLine(lines[i]);
-    const editorName = toStr(cols[0]); const clientName = toStr(cols[1]);
-    if (editorName.toLowerCase() === 'total' || editorName.toLowerCase() === 'remark') continue;
-    if (editorName && editorName !== '') {
-      currentEditor = editorName;
-      if (!editorsMap[currentEditor]) { editorsMap[currentEditor] = { name: currentEditor, clients: [], daily: Array(31).fill(0), total: 0, target: 0, achieved: 0, extra: 0, regularTarget: 192 }; }
+    let col0 = toStr(cols[0]).replace(/\n/g, ' ').trim();
+    let col1 = toStr(cols[1]).replace(/\n/g, ' ').trim();
+    const col1Lower = col1.toLowerCase();
+    
+    // Skip special rows
+    if (col1Lower === 'total' || col1Lower === 'remark' || col1Lower === 'extra') {
+      // If this is a Total row, grab the total value for current editor
+      if (col1Lower === 'total' && currentEditor && editorsMap[currentEditor]) {
+        editorsMap[currentEditor].target = toNum(cols[2]);
+        // Sum daily values from Total row
+        let total = 0;
+        for (let d = 3; d < Math.min(34, cols.length); d++) { total += toNum(cols[d]); }
+        if (total > 0) {
+          editorsMap[currentEditor].total = total;
+          editorsMap[currentEditor].achieved = total;
+          editorsMap[currentEditor].daily = [];
+          for (let d = 0; d < 31; d++) { editorsMap[currentEditor].daily.push(toNum(cols[3 + d])); }
+        }
+      }
+      continue;
     }
-    if (currentEditor && clientName && !['monthly summary','extra','total','remark',''].includes(clientName.toLowerCase())) {
-      editorsMap[currentEditor].clients.push(clientName);
-      const targetVal = parseInt(cols[2]);
-      if (!isNaN(targetVal)) editorsMap[currentEditor].target += targetVal;
-      for (let day = 0; day < 31; day++) { const val = parseInt(cols[3 + day]); if (!isNaN(val)) { editorsMap[currentEditor].daily[day] += val; editorsMap[currentEditor].total += val; editorsMap[currentEditor].achieved += val; } }
+    
+    // Skip rows that are just day number headers (1,2,3...)
+    if (col0 === '' && col1 === '' && cols.length > 3) {
+      const dayCheck = toNum(cols[3]);
+      if (dayCheck === 1 || dayCheck === 0) continue;
+    }
+    
+    // Check if col0 is an editor name
+    const col0Lower = col0.toLowerCase();
+    const isEditor = col0 !== '' && (
+      knownEditors.some(e => col0Lower.includes(e)) || 
+      (col0Lower !== 'editor' && col0Lower !== 'daily report' && col0Lower !== 'total' && 
+       col0.length > 2 && col0.length < 30 && isNaN(Number(col0)) &&
+       !col0.includes(',') && !col0.includes('Target'))
+    );
+    
+    if (isEditor) {
+      currentEditor = col0;
+      if (!editorsMap[currentEditor]) {
+        editorsMap[currentEditor] = { name: currentEditor, clients: [], daily: Array(31).fill(0), total: 0, target: 0, achieved: 0, extra: 0, regularTarget: 192 };
+      }
+      // If this row also has a client name (col1 not empty), add it
+      if (col1 && col1Lower !== 'total' && col1Lower !== 'remark' && col1Lower !== 'extra' && col1Lower !== '') {
+        editorsMap[currentEditor].clients.push(col1);
+      }
+      continue;
+    }
+    
+    // Regular client row (col0 is empty, col1 has client name)
+    if (currentEditor && col1 && col1Lower !== '' && col1Lower !== 'total' && col1Lower !== 'remark' && col1Lower !== 'extra' && col1Lower !== 'monthly summary') {
+      // Make sure this isn't raw data being misread as a client
+      if (col1.length < 50 && !col1.includes('Target') && !col1.includes('Cumulative')) {
+        editorsMap[currentEditor].clients.push(col1);
+      }
     }
   }
+  
   const result = Object.values(editorsMap);
-  console.log("[CRM Sync] Editor sheet parsed:", result.length, "editors", result.map(e=>e.name));
+  console.log("[CRM Sync] Editor sheet parsed:", result.length, "editors:", result.map(e => `${e.name}(${e.clients.length} clients, total:${e.total})`));
   return result;
 };
 
@@ -391,7 +497,8 @@ export default function App() {
   const [data, setData] = useState({ clients: DEFAULT_CLIENT_REPORT, shoots: DEFAULT_SHOOT_SCHEDULE, postEditors: DEFAULT_POST_EDITORS, videoEditors: DEFAULT_VIDEO_EDITORS, stock: DEFAULT_STOCK_DATA, uploadCalendar: [], contentPlanner: [], socialMedia: DEFAULT_SOCIAL_MEDIA });
 
   const SHEET = "1YlTOH1nX8m7-uvCcHXONfSoMTOpLllZ8JZD33oVDB0U";
-  const gUrl = (gid) => `https://docs.google.com/spreadsheets/d/${SHEET}/pub?gid=${gid}&single=true&output=csv`;
+  // Use /export endpoint (instant, no cache) instead of /pub (5-min cache delay)
+  const gUrl = (gid) => `https://docs.google.com/spreadsheets/d/${SHEET}/export?format=csv&gid=${gid}`;
   const [urls, setUrls] = useState({
     postTeam: gUrl("1994020496"),
     videoTeam: gUrl("1464361057"),
