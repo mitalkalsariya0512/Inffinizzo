@@ -511,6 +511,7 @@ export default function App() {
   });
   const [syncStatus, setSyncStatus] = useState({ loading: false, message: "Using saved data", error: false });
   const [initialSyncDone, setInitialSyncDone] = useState(false);
+  const [lastSynced, setLastSynced] = useState(null);
 
   // Full sync function
   const doFullSync = async (activeUrls, isAuto = false) => {
@@ -543,6 +544,7 @@ export default function App() {
     if (smmText) { const r = parseSocialMediaSheet(smmText); if (r.length > 0) { newData.socialMedia = r; anySuccess = true; } }
 
     setData(newData);
+    if (anySuccess) setLastSynced(new Date());
     console.log("[CRM] Sync done. Success:", anySuccess, "Clients:", newData.clients.length, "Stock:", newData.stock.length);
     return anySuccess;
   };
@@ -677,16 +679,34 @@ export default function App() {
         </nav>
         {/* REFRESH BUTTON */}
         {sidebarOpen && (
-          <button onClick={refreshData} disabled={syncStatus.loading}
-            style={{margin:'8px 12px',padding:'10px',border:'none',borderRadius:10,background:'#DC2626',color:'#fff',fontSize:12,fontWeight:700,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',gap:6,opacity:syncStatus.loading?0.6:1,transition:'all 0.2s'}}>
-            {syncStatus.loading ? '↻ Syncing...' : '🔄 Refresh data'}
-          </button>
+          <div style={{padding:'0 12px'}}>
+            <button onClick={refreshData} disabled={syncStatus.loading}
+              style={{width:'100%',margin:'4px 0',padding:'10px',border:'none',borderRadius:10,background:'#DC2626',color:'#fff',fontSize:12,fontWeight:700,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',gap:6,opacity:syncStatus.loading?0.6:1,transition:'all 0.2s'}}>
+              {syncStatus.loading ? '↻ Syncing...' : '🔄 Refresh data'}
+            </button>
+            {lastSynced && (
+              <div style={{fontSize:9,color:t.textDim,textAlign:'center',marginTop:4,lineHeight:1.4}}>
+                Last updated:<br/>
+                <span style={{fontWeight:600,color:t.textMuted}}>
+                  {lastSynced.toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'})} · {lastSynced.toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:true})}
+                </span>
+              </div>
+            )}
+          </div>
         )}
         {!sidebarOpen && (
           <button onClick={refreshData} disabled={syncStatus.loading}
             style={{margin:'8px',padding:'8px',border:'none',borderRadius:8,background:'#DC2626',color:'#fff',fontSize:14,cursor:'pointer',opacity:syncStatus.loading?0.6:1}}>
             🔄
           </button>
+        )}
+        {/* CREDIT */}
+        {sidebarOpen && (
+          <div style={{padding:'10px 14px',borderTop:`1px solid ${t.cardBorder}`,fontSize:9,color:t.textDim,lineHeight:1.5}}>
+            <div style={{fontWeight:600,color:t.textMuted,fontSize:10,marginBottom:2}}>Created by</div>
+            <div style={{fontSize:11,fontWeight:700,color:'#DC2626'}}>Mital Kalsariya</div>
+            <div style={{marginTop:2,opacity:0.6}}>INFINIZIO Digital Solutions</div>
+          </div>
         )}
         <button onClick={() => setSidebarOpen(!sidebarOpen)} style={{padding:10,borderTop:`1px solid ${t.cardBorder}`,background:'transparent',border:'none',borderTop:`1px solid ${t.cardBorder}`,color:t.textMuted,fontSize:11,cursor:'pointer'}}>
           {sidebarOpen ? '◂ Collapse' : '▸'}
@@ -706,7 +726,10 @@ export default function App() {
             </button>
             <div style={{display:'flex',alignItems:'center',gap:6,fontSize:11}}>
               <span style={{width:7,height:7,borderRadius:'50%',background:syncStatus.loading?'#F59E0B':syncStatus.error?'#DC2626':'#10B981',animation:syncStatus.loading?'':'none'}} />
-              <span style={{color:t.textMuted}}>{syncStatus.loading?'Syncing...':syncStatus.message||'Live'}</span>
+              <span style={{color:t.textMuted}}>
+                {syncStatus.loading ? 'Syncing...' : syncStatus.message || 'Live'}
+                {lastSynced && !syncStatus.loading && <span style={{opacity:0.5,marginLeft:4}}>· {lastSynced.toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit',hour12:true})}</span>}
+              </span>
             </div>
             <div style={{width:30,height:30,borderRadius:'50%',background:'#DC2626',display:'flex',alignItems:'center',justifyContent:'center',color:'#fff',fontSize:11,fontWeight:700}}>A</div>
           </div>
