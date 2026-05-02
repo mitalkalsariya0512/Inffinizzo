@@ -469,8 +469,8 @@ export default function App() {
   const [isDark, setIsDark] = useState(true);
   const [data, setData] = useState({ clients: DEFAULT_CLIENT_REPORT, shoots: DEFAULT_SHOOT_SCHEDULE, postEditors: DEFAULT_POST_EDITORS, videoEditors: DEFAULT_VIDEO_EDITORS, stock: DEFAULT_STOCK_DATA, uploadCalendar: [], contentPlanner: [], socialMedia: DEFAULT_SOCIAL_MEDIA });
 
-  const SHEET_PUB = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRGEku-RwtkxdShelOys4sGsR4pIhZ1sy6Y6p4phed_zTI7FryR5TBcH9MGKWvcMLI7il4VIZ1volmr";
-  const gUrl = (gid) => `${SHEET_PUB}/pub?gid=${gid}&single=true&output=csv`;
+  const SHEET_ID = "1YlTOH1nX8m7-uvCcHXONfSoMTOpLllZ8JZD33oVDB0U";
+  const gUrl = (gid) => `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&gid=${gid}`;
   const [urls, setUrls] = useState({
     postTeam: gUrl("1994020496"),
     videoTeam: gUrl("1464361057"),
