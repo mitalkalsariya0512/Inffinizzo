@@ -158,63 +158,36 @@ const splitCSVLine = (line) => {
 const toNum = (v) => { const n = parseFloat(v); return isNaN(n) ? 0 : n; };
 const toStr = (v) => (v && v !== 'undefined' && v !== 'null') ? String(v).trim() : '';
 
-// Smart fetch — tries multiple methods for instant data
+// Smart fetch — published /e/ URLs work directly, with fallback to CORS proxy
 const smartFetch = async (url) => {
-  // Method 1: Direct fetch (works if sheet is shared publicly)
+  // Method 1: Direct fetch (published /e/ URLs work without CORS)
   try {
-    const res = await fetch(url, { redirect: 'follow' });
+    const res = await fetch(url);
     if (res.ok) {
       const text = await res.text();
-      if (text && text.length > 20 && !text.includes('<!DOCTYPE') && !text.includes('<html') && !text.includes('Sign in')) {
-        console.log("[CRM Fetch] Direct OK:", url.substring(0, 80), "size:", text.length);
+      if (text && text.length > 20 && !text.includes('<!DOCTYPE') && !text.includes('<html') && !text.includes('Sign in') && !text.includes('accounts.google.com')) {
+        console.log("[CRM Fetch] ✓ Direct:", url.substring(url.indexOf('gid=')), "→", text.length, "bytes");
         return text;
+      } else {
+        console.log("[CRM Fetch] ✗ Direct returned HTML/login page, not CSV");
       }
     }
-  } catch(e) { console.log("[CRM Fetch] Direct failed:", e.message); }
+  } catch(e) { console.log("[CRM Fetch] ✗ Direct failed:", e.message); }
 
-  // Method 2: CORS proxy with export URL (instant, no cache)
+  // Method 2: CORS proxy fallback
   try {
     const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(url)}`;
     const res = await fetch(proxyUrl);
     if (res.ok) {
       const text = await res.text();
       if (text && text.length > 20 && !text.includes('<!DOCTYPE') && !text.includes('Sign in')) {
-        console.log("[CRM Fetch] CORS proxy OK:", url.substring(0, 80), "size:", text.length);
+        console.log("[CRM Fetch] ✓ Proxy:", url.substring(url.indexOf('gid=')), "→", text.length, "bytes");
         return text;
       }
     }
-  } catch(e) { console.log("[CRM Fetch] CORS proxy failed:", e.message); }
+  } catch(e) { console.log("[CRM Fetch] ✗ Proxy failed:", e.message); }
 
-  // Method 3: Try the /pub URL as fallback (cached but reliable)
-  try {
-    const pubUrl = url.replace('/export?format=csv&gid=', '/pub?gid=').replace(/&gid=/, '&single=true&output=csv&gid=');
-    const altUrl = url.includes('/export?') 
-      ? `https://docs.google.com/spreadsheets/d/${url.split('/d/')[1]?.split('/')[0]}/pub?gid=${url.split('gid=')[1]}&single=true&output=csv`
-      : url;
-    const res = await fetch(altUrl);
-    if (res.ok) {
-      const text = await res.text();
-      if (text && text.length > 20 && !text.includes('<!DOCTYPE') && !text.includes('Sign in')) {
-        console.log("[CRM Fetch] Pub fallback OK:", altUrl.substring(0, 80), "size:", text.length);
-        return text;
-      }
-    }
-  } catch(e) { console.log("[CRM Fetch] Pub fallback failed:", e.message); }
-
-  // Method 4: Alternative CORS proxy
-  try {
-    const proxy2 = `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
-    const res = await fetch(proxy2);
-    if (res.ok) {
-      const text = await res.text();
-      if (text && text.length > 20 && !text.includes('<!DOCTYPE') && !text.includes('Sign in')) {
-        console.log("[CRM Fetch] AllOrigins OK:", text.length);
-        return text;
-      }
-    }
-  } catch(e) {}
-
-  console.log("[CRM Fetch] All methods failed for:", url.substring(0, 80));
+  console.log("[CRM Fetch] ✗✗ All methods failed for:", url.substring(url.indexOf('gid=')));
   return null;
 };
 
@@ -496,9 +469,8 @@ export default function App() {
   const [isDark, setIsDark] = useState(true);
   const [data, setData] = useState({ clients: DEFAULT_CLIENT_REPORT, shoots: DEFAULT_SHOOT_SCHEDULE, postEditors: DEFAULT_POST_EDITORS, videoEditors: DEFAULT_VIDEO_EDITORS, stock: DEFAULT_STOCK_DATA, uploadCalendar: [], contentPlanner: [], socialMedia: DEFAULT_SOCIAL_MEDIA });
 
-  const SHEET = "1YlTOH1nX8m7-uvCcHXONfSoMTOpLllZ8JZD33oVDB0U";
-  // Use /export endpoint (instant, no cache) instead of /pub (5-min cache delay)
-  const gUrl = (gid) => `https://docs.google.com/spreadsheets/d/${SHEET}/export?format=csv&gid=${gid}`;
+  const SHEET_PUB = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRGEku-RwtkxdShelOys4sGsR4pIhZ1sy6Y6p4phed_zTI7FryR5TBcH9MGKWvcMLI7il4VIZ1volmr";
+  const gUrl = (gid) => `${SHEET_PUB}/pub?gid=${gid}&single=true&output=csv`;
   const [urls, setUrls] = useState({
     postTeam: gUrl("1994020496"),
     videoTeam: gUrl("1464361057"),
