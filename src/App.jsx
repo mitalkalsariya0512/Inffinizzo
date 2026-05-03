@@ -303,70 +303,67 @@ const parseShootSheet = (text) => {
 
 const parseEditorSheet = (text) => {
   if (!text) return [];
-  // Normalize newlines inside quoted fields, then split by actual line breaks
   const raw = text.replace(/\r\n/g, '\n');
-  // Handle quoted fields that contain newlines
   let cleaned = '';
   let inQuotes = false;
   for (let i = 0; i < raw.length; i++) {
     const ch = raw[i];
     if (ch === '"') { inQuotes = !inQuotes; cleaned += ch; }
-    else if (ch === '\n' && inQuotes) { cleaned += ' '; } // replace newline inside quotes with space
+    else if (ch === '\n' && inQuotes) { cleaned += ' '; }
     else { cleaned += ch; }
   }
   const lines = cleaned.split('\n').filter(l => l.trim() !== '');
   
-  // Find header row
   const headerIdx = lines.findIndex(l => {
     const lower = l.toLowerCase();
     return (lower.includes('editor') && lower.includes('client')) || (lower.includes('editor') && lower.includes('target'));
   });
-  if (headerIdx === -1) { console.log("[CRM Sync] Editor sheet: no header found in", lines.length, "lines"); return []; }
+  if (headerIdx === -1) { console.log("[CRM Sync] Editor sheet: no header found"); return []; }
   
-  // Known editor names to validate against
   const knownEditors = ['dharmesh','pradip','kushani','aashlesha','keyur','kaushik','kinjal','mandar','ronit','krushang'];
   
   let currentEditor = null;
   const editorsMap = {};
   
-  // Start from the row after header (skip sub-header row with day numbers)
   for (let i = headerIdx + 1; i < lines.length; i++) {
     const cols = splitCSVLine(lines[i]);
     let col0 = toStr(cols[0]).replace(/\n/g, ' ').trim();
     let col1 = toStr(cols[1]).replace(/\n/g, ' ').trim();
     const col1Lower = col1.toLowerCase();
+    const col0Lower = col0.toLowerCase();
     
-    // Skip special rows
-    if (col1Lower === 'total' || col1Lower === 'remark' || col1Lower === 'extra') {
-      // If this is a Total row, grab the total value for current editor
-      if (col1Lower === 'total' && currentEditor && editorsMap[currentEditor]) {
-        editorsMap[currentEditor].target = toNum(cols[2]);
-        // Sum daily values from Total row
-        let total = 0;
-        for (let d = 3; d < Math.min(34, cols.length); d++) { total += toNum(cols[d]); }
-        if (total > 0) {
-          editorsMap[currentEditor].total = total;
-          editorsMap[currentEditor].achieved = total;
-          editorsMap[currentEditor].daily = [];
-          for (let d = 0; d < 31; d++) { editorsMap[currentEditor].daily.push(toNum(cols[3 + d])); }
-        }
+    // Skip remark/extra rows
+    if (col1Lower === 'remark' || col1Lower === 'extra') continue;
+    
+    // TOTAL ROW — this is the ONLY source for daily values and totals
+    if (col1Lower === 'total' && currentEditor && editorsMap[currentEditor]) {
+      editorsMap[currentEditor].target = toNum(cols[2]);
+      const daily = [];
+      let total = 0;
+      for (let d = 0; d < 31; d++) {
+        const val = toNum(cols[3 + d]);
+        daily.push(val);
+        total += val;
       }
+      editorsMap[currentEditor].daily = daily;
+      editorsMap[currentEditor].total = total;
+      editorsMap[currentEditor].achieved = total;
+      // Check for "Client Total" column (typically last meaningful column)
+      const lastCol = toNum(cols[cols.length - 1]);
+      const secondLast = toNum(cols[cols.length - 2]);
+      console.log(`[CRM Parse] ${currentEditor}: target=${editorsMap[currentEditor].target}, daily_sum=${total}`);
       continue;
     }
     
-    // Skip rows that are just day number headers (1,2,3...)
-    if (col0 === '' && col1 === '' && cols.length > 3) {
-      const dayCheck = toNum(cols[3]);
-      if (dayCheck === 1 || dayCheck === 0) continue;
-    }
+    // Skip day number header rows (1,2,3...)
+    if (col0 === '' && col1 === '' ) continue;
     
-    // Check if col0 is an editor name
-    const col0Lower = col0.toLowerCase();
+    // Check if this is an editor name row
     const isEditor = col0 !== '' && (
       knownEditors.some(e => col0Lower.includes(e)) || 
       (col0Lower !== 'editor' && col0Lower !== 'daily report' && col0Lower !== 'total' && 
        col0.length > 2 && col0.length < 30 && isNaN(Number(col0)) &&
-       !col0.includes(',') && !col0.includes('Target'))
+       !col0.includes(',') && !col0.includes('Target') && !col0.includes('Cumulative'))
     );
     
     if (isEditor) {
@@ -374,24 +371,23 @@ const parseEditorSheet = (text) => {
       if (!editorsMap[currentEditor]) {
         editorsMap[currentEditor] = { name: currentEditor, clients: [], daily: Array(31).fill(0), total: 0, target: 0, achieved: 0, extra: 0, regularTarget: 192 };
       }
-      // If this row also has a client name (col1 not empty), add it
+      // If this row also has a client name, add it as a client (but do NOT sum daily values)
       if (col1 && col1Lower !== 'total' && col1Lower !== 'remark' && col1Lower !== 'extra' && col1Lower !== '') {
         editorsMap[currentEditor].clients.push(col1);
       }
       continue;
     }
     
-    // Regular client row (col0 is empty, col1 has client name)
+    // Regular client row — add client name only, do NOT sum daily values (Total row handles that)
     if (currentEditor && col1 && col1Lower !== '' && col1Lower !== 'total' && col1Lower !== 'remark' && col1Lower !== 'extra' && col1Lower !== 'monthly summary') {
-      // Make sure this isn't raw data being misread as a client
-      if (col1.length < 50 && !col1.includes('Target') && !col1.includes('Cumulative')) {
+      if (col1.length < 50 && !col1.includes('Target') && !col1.includes('Cumulative') && !col1.includes('Week')) {
         editorsMap[currentEditor].clients.push(col1);
       }
     }
   }
   
   const result = Object.values(editorsMap);
-  console.log("[CRM Sync] Editor sheet parsed:", result.length, "editors:", result.map(e => `${e.name}(${e.clients.length} clients, total:${e.total})`));
+  console.log("[CRM Sync] Editor sheet parsed:", result.length, "editors:", result.map(e => `${e.name}(${e.clients.length}cl, total:${e.total})`));
   return result;
 };
 
@@ -497,7 +493,12 @@ export default function App() {
   });
 
   const [activeMonthId, setActiveMonthId] = useState(() => {
-    try { return localStorage.getItem('infinizio_active_month') || DEFAULT_MONTHS[0].id; } catch(e) { return DEFAULT_MONTHS[0].id; }
+    try {
+      const saved = localStorage.getItem('infinizio_active_month');
+      if (saved) return saved;
+    } catch(e) {}
+    // Default to the LAST month in the list (most recent)
+    return DEFAULT_MONTHS[DEFAULT_MONTHS.length - 1].id;
   });
 
   const [newMonth, setNewMonth] = useState({ label: "", sheetId: "", gids: { postTeam:"", videoTeam:"", stockData:"", socialMedia:"", shootSchedule:"", clientReport:"", uploadCalendar:"", contentPlanner:"" } });
