@@ -459,7 +459,7 @@ const NAV = [
   { id: "shoots", label: "Shoot Schedule", icon: "◉" },
   { id: "clients", label: "Client Reports", icon: "◇" },
   { id: "calendar", label: "Upload Calendar", icon: "▤" },
-  { id: "sync", label: "Data Sync", icon: "🔌" },
+  { id: "sync", label: "Month Manager", icon: "📅" },
 ];
 
 // ─── MAIN DASHBOARD ───
@@ -469,18 +469,90 @@ export default function App() {
   const [isDark, setIsDark] = useState(true);
   const [data, setData] = useState({ clients: DEFAULT_CLIENT_REPORT, shoots: DEFAULT_SHOOT_SCHEDULE, postEditors: DEFAULT_POST_EDITORS, videoEditors: DEFAULT_VIDEO_EDITORS, stock: DEFAULT_STOCK_DATA, uploadCalendar: [], contentPlanner: [], socialMedia: DEFAULT_SOCIAL_MEDIA });
 
-  const SHEET_ID = "1YlTOH1nX8m7-uvCcHXONfSoMTOpLllZ8JZD33oVDB0U";
-  const gUrl = (gid) => `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&gid=${gid}`;
-  const [urls, setUrls] = useState({
-    postTeam: gUrl("1994020496"),
-    videoTeam: gUrl("1464361057"),
-    stockData: gUrl("481097684"),
-    socialMedia: gUrl("212786400"),
-    shootSchedule: gUrl("2021527297"),
-    clientReport: gUrl("630686980"),
-    uploadCalendar: gUrl("1514639278"),
-    contentPlanner: gUrl("1084297487"),
+  // ─── MONTH CONFIGURATION SYSTEM ───
+  const DEFAULT_MONTHS = [
+    {
+      id: "apr2026",
+      label: "April 2026",
+      sheetId: "1VatxpyfzKj-UujrInEx3-iWUdTK_PeVUa57ZKTOupZ4",
+      gids: {
+        postTeam: "0",
+        videoTeam: "585800266",
+        stockData: "1583394645",
+        socialMedia: "297690809",
+        shootSchedule: "251233280",
+        clientReport: "1961669140",
+        uploadCalendar: "3933890",
+        contentPlanner: "775996302",
+      }
+    }
+  ];
+
+  const [months, setMonths] = useState(() => {
+    try {
+      const saved = localStorage.getItem('infinizio_months');
+      if (saved) { const parsed = JSON.parse(saved); if (parsed.length > 0) return parsed; }
+    } catch(e) {}
+    return DEFAULT_MONTHS;
   });
+
+  const [activeMonthId, setActiveMonthId] = useState(() => {
+    try { return localStorage.getItem('infinizio_active_month') || DEFAULT_MONTHS[0].id; } catch(e) { return DEFAULT_MONTHS[0].id; }
+  });
+
+  const [newMonth, setNewMonth] = useState({ label: "", sheetId: "", gids: { postTeam:"", videoTeam:"", stockData:"", socialMedia:"", shootSchedule:"", clientReport:"", uploadCalendar:"", contentPlanner:"" } });
+
+  const activeMonth = months.find(m => m.id === activeMonthId) || months[0];
+
+  const buildUrl = (sheetId, gid) => `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:csv&gid=${gid}`;
+
+  const [urls, setUrls] = useState({
+    postTeam: buildUrl(activeMonth.sheetId, activeMonth.gids.postTeam),
+    videoTeam: buildUrl(activeMonth.sheetId, activeMonth.gids.videoTeam),
+    stockData: buildUrl(activeMonth.sheetId, activeMonth.gids.stockData),
+    socialMedia: buildUrl(activeMonth.sheetId, activeMonth.gids.socialMedia),
+    shootSchedule: buildUrl(activeMonth.sheetId, activeMonth.gids.shootSchedule),
+    clientReport: buildUrl(activeMonth.sheetId, activeMonth.gids.clientReport),
+    uploadCalendar: buildUrl(activeMonth.sheetId, activeMonth.gids.uploadCalendar),
+    contentPlanner: buildUrl(activeMonth.sheetId, activeMonth.gids.contentPlanner),
+  });
+
+  const switchMonth = (monthId) => {
+    const month = months.find(m => m.id === monthId);
+    if (!month) return;
+    setActiveMonthId(monthId);
+    localStorage.setItem('infinizio_active_month', monthId);
+    const newUrls = {
+      postTeam: buildUrl(month.sheetId, month.gids.postTeam),
+      videoTeam: buildUrl(month.sheetId, month.gids.videoTeam),
+      stockData: buildUrl(month.sheetId, month.gids.stockData),
+      socialMedia: buildUrl(month.sheetId, month.gids.socialMedia),
+      shootSchedule: buildUrl(month.sheetId, month.gids.shootSchedule),
+      clientReport: buildUrl(month.sheetId, month.gids.clientReport),
+      uploadCalendar: buildUrl(month.sheetId, month.gids.uploadCalendar),
+      contentPlanner: buildUrl(month.sheetId, month.gids.contentPlanner),
+    };
+    setUrls(newUrls);
+    // Trigger re-sync with new month
+    setTimeout(() => { setSyncStatus({ loading: true, message: `Loading ${month.label}...`, error: false }); doFullSync(newUrls).then(success => { setSyncStatus({ loading: false, message: success ? `Live — ${month.label}` : "Using saved data", error: false }); }); }, 100);
+  };
+
+  const addMonth = () => {
+    if (!newMonth.label || !newMonth.sheetId || !newMonth.gids.clientReport) return;
+    const id = newMonth.label.toLowerCase().replace(/\s+/g, '').replace(/[^a-z0-9]/g, '');
+    const updated = [...months, { id, label: newMonth.label, sheetId: newMonth.sheetId, gids: newMonth.gids }];
+    setMonths(updated);
+    localStorage.setItem('infinizio_months', JSON.stringify(updated));
+    setNewMonth({ label: "", sheetId: "", gids: { postTeam:"", videoTeam:"", stockData:"", socialMedia:"", shootSchedule:"", clientReport:"", uploadCalendar:"", contentPlanner:"" } });
+  };
+
+  const deleteMonth = (monthId) => {
+    if (months.length <= 1) return;
+    const updated = months.filter(m => m.id !== monthId);
+    setMonths(updated);
+    localStorage.setItem('infinizio_months', JSON.stringify(updated));
+    if (activeMonthId === monthId) switchMonth(updated[0].id);
+  };
   const [syncStatus, setSyncStatus] = useState({ loading: false, message: "Using saved data", error: false });
   const [initialSyncDone, setInitialSyncDone] = useState(false);
   const [lastSynced, setLastSynced] = useState(null);
@@ -690,9 +762,14 @@ export default function App() {
         <header style={{position:'sticky',top:0,zIndex:10,display:'flex',alignItems:'center',justifyContent:'space-between',padding:'10px 24px',borderBottom:`1px solid ${t.cardBorder}`,background:t.headerBg,backdropFilter:'blur(12px)'}}>
           <div>
             <h1 style={{fontSize:17,fontWeight:700,margin:0}}>{NAV.find(n => n.id === activeSection)?.label}</h1>
-            <p style={{fontSize:11,color:t.textMuted,margin:'2px 0 0'}}>April 2026 · INFINIZZO CRM Dashboard</p>
+            <p style={{fontSize:11,color:t.textMuted,margin:'2px 0 0'}}>{activeMonth.label} · INFINIZZO CRM Dashboard</p>
           </div>
           <div style={{display:'flex',alignItems:'center',gap:14}}>
+            {/* MONTH SELECTOR */}
+            <select value={activeMonthId} onChange={(e) => switchMonth(e.target.value)}
+              style={{padding:'5px 10px',fontSize:11,fontWeight:600,borderRadius:8,border:`1px solid ${t.cardBorder}`,background:t.card,color:'#DC2626',cursor:'pointer',minWidth:120}}>
+              {months.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}
+            </select>
             <button onClick={() => setIsDark(!isDark)} style={{padding:'5px 12px',fontSize:11,fontWeight:700,borderRadius:8,border:`1px solid ${t.cardBorder}`,background:t.card,color:t.text,cursor:'pointer',display:'flex',alignItems:'center',gap:4}}>
               {isDark ? "☀ Light" : "☾ Dark"}
             </button>
@@ -712,34 +789,77 @@ export default function App() {
             {/* ═══ DATA SYNC ═══ */}
             {activeSection === "sync" && (
               <div className="max-w-3xl mx-auto space-y-6">
-                <div className="rounded-xl p-8 border border-slate-200 bg-white shadow-sm dark:shadow-none dark:border-white/5 dark:bg-white/[0.02]">
-                  <h2 className="text-xl font-bold mb-2 flex items-center gap-2">🔌 Connect Google Sheets</h2>
-                  <p className="text-sm opacity-70 mb-6">Connect your master Google Sheets to power this dashboard. Links are saved to your browser.</p>
-                  <div className="space-y-4">
-                    {[
-                      { name: "postTeam", label: "1. Daily Report - Post Team (CSV URL)", color: "emerald" },
-                      { name: "videoTeam", label: "2. Daily Report - Video Team (CSV URL)", color: "orange" },
-                      { name: "stockData", label: "3. Stock (CSV URL)", color: "blue" },
-                      { name: "socialMedia", label: "4. Social Media Team Report (CSV URL)", color: "rose" },
-                      { name: "shootSchedule", label: "5. Shoot Schedule (CSV URL)", color: "blue" },
-                      { name: "clientReport", label: "6. Client Report (CSV URL)", color: "blue" },
-                      { name: "uploadCalendar", label: "7. Uploading Calendar (CSV URL)", color: "purple" },
-                      { name: "contentPlanner", label: "8. Content Planner_Post (CSV URL)", color: "indigo" },
-                    ].map(field => (
-                      <div key={field.name}>
-                        <label className={`block text-[11px] font-bold uppercase tracking-wider mb-1.5 ${field.color === 'emerald' ? 'text-emerald-600 dark:text-emerald-400' : field.color === 'orange' ? 'text-orange-600 dark:text-orange-400' : field.color === 'purple' ? 'text-purple-600 dark:text-purple-400' : field.color === 'indigo' ? 'text-indigo-600 dark:text-indigo-400' : field.color === 'rose' ? 'text-rose-600 dark:text-rose-400' : 'text-slate-600 dark:text-slate-400'}`}>{field.label}</label>
-                        <input type="text" name={field.name} value={urls[field.name]} onChange={handleUrlChange} placeholder="https://docs.google.com/spreadsheets/d/e/.../pub?output=csv" className="w-full bg-slate-100 dark:bg-black/30 border border-slate-300 dark:border-white/10 rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:border-red-500" />
+                {/* CURRENT MONTH */}
+                <div className="rounded-xl p-6 border border-slate-200 bg-white shadow-sm dark:shadow-none dark:border-white/5 dark:bg-white/[0.02]">
+                  <h2 className="text-xl font-bold mb-1">📅 Month Manager</h2>
+                  <p className="text-sm opacity-70 mb-6">Switch between months or add new monthly sheets. Each month connects to its own Google Sheet.</p>
+
+                  <div className="space-y-3 mb-6">
+                    {months.map(m => (
+                      <div key={m.id} style={{display:'flex',alignItems:'center',gap:12,padding:'12px 16px',borderRadius:10,background:m.id===activeMonthId?'rgba(220,38,38,0.05)':'transparent',border:`1px solid ${m.id===activeMonthId?'rgba(220,38,38,0.2)':'rgba(0,0,0,0.05)'}`}}>
+                        <div style={{width:10,height:10,borderRadius:'50%',background:m.id===activeMonthId?'#DC2626':'#D1D5DB',flexShrink:0}}/>
+                        <div style={{flex:1}}>
+                          <div style={{fontWeight:600,fontSize:14,color:m.id===activeMonthId?'#DC2626':undefined}}>{m.label}</div>
+                          <div style={{fontSize:10,opacity:0.5,fontFamily:'monospace',marginTop:2}}>Sheet: {m.sheetId.substring(0,20)}...</div>
+                        </div>
+                        <button onClick={() => switchMonth(m.id)} style={{padding:'5px 14px',borderRadius:6,border:'1px solid #DC2626',background:m.id===activeMonthId?'#DC2626':'transparent',color:m.id===activeMonthId?'#fff':'#DC2626',fontSize:11,fontWeight:600,cursor:'pointer'}}>{m.id===activeMonthId?'✓ Active':'Switch'}</button>
+                        {months.length > 1 && <button onClick={() => deleteMonth(m.id)} style={{padding:'5px 10px',borderRadius:6,border:'1px solid rgba(0,0,0,0.1)',background:'transparent',color:'#999',fontSize:11,cursor:'pointer'}}>✕</button>}
                       </div>
                     ))}
                   </div>
-                  <div className="mt-8 flex items-center gap-4">
-                    <button onClick={syncData} disabled={syncStatus.loading} className="bg-red-600 hover:bg-red-700 text-white font-bold py-3 px-8 rounded-xl transition-all shadow-lg flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed">{syncStatus.loading ? "↻ Syncing..." : "🔄 Execute 8-Node Data Sync"}</button>
+
+                  {/* SYNC BUTTON */}
+                  <div className="flex items-center gap-4 mb-4">
+                    <button onClick={syncData} disabled={syncStatus.loading} className="bg-red-600 hover:bg-red-700 text-white font-bold py-3 px-8 rounded-xl transition-all shadow-lg flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed">{syncStatus.loading ? "↻ Syncing..." : `🔄 Sync ${activeMonth.label}`}</button>
                     {syncStatus.message && <span className={`text-sm font-bold bg-slate-50 dark:bg-black/30 px-4 py-2 rounded-lg ${syncStatus.error ? 'text-red-500' : 'text-emerald-600 dark:text-emerald-400'}`}>{syncStatus.message}</span>}
                   </div>
                 </div>
+
+                {/* ADD NEW MONTH */}
+                <div className="rounded-xl p-6 border border-slate-200 bg-white shadow-sm dark:shadow-none dark:border-white/5 dark:bg-white/[0.02]">
+                  <h3 className="text-lg font-bold mb-1">➕ Add new month</h3>
+                  <p className="text-sm opacity-70 mb-4">Create a new Google Sheet with the same tab structure, share it as "Anyone with the link", then paste the details below.</p>
+
+                  <div className="space-y-3">
+                    <div>
+                      <label className="block text-[11px] font-bold uppercase tracking-wider mb-1 text-red-600">Month name</label>
+                      <input type="text" value={newMonth.label} onChange={e => setNewMonth({...newMonth, label: e.target.value})} placeholder="May 2026" className="w-full bg-slate-100 dark:bg-black/30 border border-slate-300 dark:border-white/10 rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:border-red-500" />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-bold uppercase tracking-wider mb-1 text-red-600">Google Sheet ID</label>
+                      <input type="text" value={newMonth.sheetId} onChange={e => setNewMonth({...newMonth, sheetId: e.target.value})} placeholder="Paste the ID from the URL: docs.google.com/spreadsheets/d/THIS_PART/edit" className="w-full bg-slate-100 dark:bg-black/30 border border-slate-300 dark:border-white/10 rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:border-red-500" />
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      {[
+                        {key:"postTeam",label:"Post Team GID"},
+                        {key:"videoTeam",label:"Video Team GID"},
+                        {key:"stockData",label:"Stock GID"},
+                        {key:"socialMedia",label:"Social Media GID"},
+                        {key:"shootSchedule",label:"Shoot Schedule GID"},
+                        {key:"clientReport",label:"Client Report GID"},
+                        {key:"uploadCalendar",label:"Upload Calendar GID"},
+                        {key:"contentPlanner",label:"Content Planner GID"},
+                      ].map(f => (
+                        <div key={f.key}>
+                          <label className="block text-[10px] font-bold uppercase tracking-wider mb-1 text-slate-500">{f.label}</label>
+                          <input type="text" value={newMonth.gids[f.key]} onChange={e => setNewMonth({...newMonth, gids: {...newMonth.gids, [f.key]: e.target.value}})} placeholder="e.g. 0, 585800266" className="w-full bg-slate-100 dark:bg-black/30 border border-slate-300 dark:border-white/10 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-red-500" />
+                        </div>
+                      ))}
+                    </div>
+                    <button onClick={addMonth} style={{width:'100%',padding:'12px',borderRadius:10,border:'none',background:'#DC2626',color:'#fff',fontSize:13,fontWeight:700,cursor:'pointer',marginTop:8}}>Add month to dashboard</button>
+                  </div>
+                </div>
+
+                {/* INSTRUCTIONS */}
                 <div className="rounded-xl p-5 border border-amber-200 bg-amber-50 dark:border-amber-500/20 dark:bg-amber-500/5 text-sm text-amber-800 dark:text-amber-400">
-                  <h4 className="font-bold mb-1">Important sync rules:</h4>
-                  <p className="opacity-90">If you leave a box empty, the dashboard safely retains the existing data for that section. You must select "Comma-separated values (.csv)" when publishing from Google Sheets.</p>
+                  <h4 className="font-bold mb-2">How to add a new month:</h4>
+                  <div style={{lineHeight:1.8}}>
+                    1. Duplicate your mastersheet for the new month<br/>
+                    2. Share it: <strong>Share → Anyone with the link → Viewer</strong><br/>
+                    3. Copy the Sheet ID from the URL (between /d/ and /edit)<br/>
+                    4. Click each tab and note the gid= number from the URL<br/>
+                    5. Fill in the form above and click "Add month"
+                  </div>
                 </div>
               </div>
             )}
