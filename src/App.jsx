@@ -140,230 +140,79 @@ const DEFAULT_SOCIAL_MEDIA = [
   { client:"Sagwan Furniture", smm:"Dipen", postTarget:0, postApproved:0, postUploaded:0, videoTarget:12, videoApproved:8, videoUploaded:8, totalTarget:12, totalUploaded:8 },
 ];
 
-// ─── CSV PARSER UTILITIES ───
-const splitCSVLine = (line) => {
-  const result = [];
-  let current = '';
-  let inQuotes = false;
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i];
-    if (ch === '"') { inQuotes = !inQuotes; }
-    else if (ch === ',' && !inQuotes) { result.push(current.trim()); current = ''; }
-    else { current += ch; }
+// ─── GOOGLE SHEETS JSON API ───
+// Uses /gviz/tq?tqx=out:json&sheet=TAB_NAME — most reliable method
+const fetchSheetJSON = async (sheetId, tabName) => {
+  const url = `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:json&sheet=${encodeURIComponent(tabName)}`;
+  try {
+    const res = await fetch(url);
+    if (!res.ok) { console.log(`[CRM] ✗ Fetch failed for "${tabName}": ${res.status}`); return null; }
+    let text = await res.text();
+    // Google wraps JSON in: google.visualization.Query.setResponse({...})
+    const match = text.match(/google\.visualization\.Query\.setResponse\(([\s\S]*)\);?$/);
+    if (match) text = match[1];
+    const json = JSON.parse(text);
+    if (!json.table || !json.table.rows) { console.log(`[CRM] ✗ No table data for "${tabName}"`); return null; }
+    
+    // Extract headers from cols
+    const headers = (json.table.cols || []).map(c => (c.label || '').trim());
+    // Extract rows
+    const rows = json.table.rows.map(r => {
+      return (r.c || []).map(cell => {
+        if (!cell) return '';
+        return cell.v !== null && cell.v !== undefined ? cell.v : (cell.f || '');
+      });
+    });
+    
+    console.log(`[CRM] ✓ "${tabName}": ${rows.length} rows, ${headers.length} cols`);
+    return { headers, rows };
+  } catch(e) {
+    console.error(`[CRM] ✗ Error fetching "${tabName}":`, e.message);
+    return null;
   }
-  result.push(current.trim());
-  return result;
 };
 
 const toNum = (v) => { const n = parseFloat(v); return isNaN(n) ? 0 : n; };
-const toStr = (v) => (v && v !== 'undefined' && v !== 'null') ? String(v).trim() : '';
+const toStr = (v) => (v && v !== 'undefined' && v !== 'null' && v !== 'None') ? String(v).trim() : '';
 
-// Smart fetch — published /e/ URLs work directly, with fallback to CORS proxy
-const smartFetch = async (url) => {
-  // Method 1: Direct fetch (published /e/ URLs work without CORS)
-  try {
-    const res = await fetch(url);
-    if (res.ok) {
-      const text = await res.text();
-      if (text && text.length > 20 && !text.includes('<!DOCTYPE') && !text.includes('<html') && !text.includes('Sign in') && !text.includes('accounts.google.com')) {
-        console.log("[CRM Fetch] ✓ Direct:", url.substring(url.indexOf('gid=')), "→", text.length, "bytes");
-        return text;
-      } else {
-        console.log("[CRM Fetch] ✗ Direct returned HTML/login page, not CSV");
-      }
-    }
-  } catch(e) { console.log("[CRM Fetch] ✗ Direct failed:", e.message); }
-
-  // Method 2: CORS proxy fallback
-  try {
-    const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(url)}`;
-    const res = await fetch(proxyUrl);
-    if (res.ok) {
-      const text = await res.text();
-      if (text && text.length > 20 && !text.includes('<!DOCTYPE') && !text.includes('Sign in')) {
-        console.log("[CRM Fetch] ✓ Proxy:", url.substring(url.indexOf('gid=')), "→", text.length, "bytes");
-        return text;
-      }
-    }
-  } catch(e) { console.log("[CRM Fetch] ✗ Proxy failed:", e.message); }
-
-  console.log("[CRM Fetch] ✗✗ All methods failed for:", url.substring(url.indexOf('gid=')));
-  return null;
-};
-
-// Parse Client Report by column position (matches your sheet structure)
-const parseClientReport = (text) => {
-  if (!text) return [];
-  const lines = text.split('\n').filter(l => l.trim() !== '');
-  const results = [];
-  // Find the header row - look for row containing "Client" or "SMM"
-  let dataStart = 0;
-  for (let i = 0; i < Math.min(10, lines.length); i++) {
-    const lower = lines[i].toLowerCase();
-    if (lower.includes('client') && (lower.includes('smm') || lower.includes('person') || lower.includes('target'))) {
-      dataStart = i + 1;
-      // Check if next row is also a header (sub-header)
-      if (dataStart < lines.length) {
-        const nextCols = splitCSVLine(lines[dataStart]);
-        const textCount = nextCols.filter(c => c !== '' && isNaN(Number(c))).length;
-        if (textCount >= 3) dataStart++;
-      }
-      break;
-    }
-  }
-  for (let i = dataStart; i < lines.length; i++) {
-    const cols = splitCSVLine(lines[i]);
-    // Try to find client name - look for a non-empty text column
-    const client = toStr(cols[3]) || toStr(cols[2]) || toStr(cols[1]) || toStr(cols[0]);
-    if (!client || client.toLowerCase() === 'total' || client.toLowerCase() === 'none') continue;
-    // Map by position based on your sheet structure
-    results.push({
-      client: client,
-      person: toStr(cols[1]) || "Unassigned",
-      smm: toStr(cols[2]) || "Unassigned",
-      posts: toNum(cols[4]),
-      videos: toNum(cols[5]),
-      target: toNum(cols[6]),
-      total: toNum(cols[7]),
-      status: toStr(cols[8]) || "Pending",
-      pending: toNum(cols[10]) || toNum(cols[9]),
-      remark: toStr(cols[9]),
-    });
-  }
-  console.log("[CRM Sync] Client Report parsed:", results.length, "clients", results.slice(0,2));
-  return results;
-};
-
-// Parse Stock by column position
-const parseStockSheet = (text) => {
-  if (!text) return [];
-  const lines = text.split('\n').filter(l => l.trim() !== '');
-  const results = [];
-  let dataStart = 0;
-  for (let i = 0; i < Math.min(10, lines.length); i++) {
-    const lower = lines[i].toLowerCase();
-    if (lower.includes('client') && (lower.includes('target') || lower.includes('stock') || lower.includes('priority'))) {
-      dataStart = i + 1;
-      if (dataStart < lines.length) {
-        const nextCols = splitCSVLine(lines[dataStart]);
-        const textCount = nextCols.filter(c => c !== '' && isNaN(Number(c))).length;
-        if (textCount >= 2) dataStart++;
-      }
-      break;
-    }
-  }
-  for (let i = dataStart; i < lines.length; i++) {
-    const cols = splitCSVLine(lines[i]);
-    const client = toStr(cols[3]) || toStr(cols[2]) || toStr(cols[1]) || toStr(cols[0]);
-    if (!client || client.toLowerCase() === 'total' || client.toLowerCase() === 'none') continue;
-    let priority = toStr(cols[22]) || toStr(cols[21]) || "SAFE";
-    priority = priority.replace(/[🟢🔴🟡\s]/g, '').trim() || "SAFE";
-    results.push({
-      client: client,
-      postRemaining: toNum(cols[9]),
-      videoRemaining: toNum(cols[16]),
-      totalApproved: toNum(cols[19]),
-      totalUploaded: toNum(cols[20]),
-      totalTarget: toNum(cols[18]),
-      totalRemaining: toNum(cols[21]),
-      priority: priority,
-      toProduce: toNum(cols[23]),
-    });
-  }
-  console.log("[CRM Sync] Stock parsed:", results.length, "clients", results.slice(0,2));
-  return results;
-};
-
-// Parse Shoot Schedule
-const parseShootSheet = (text) => {
-  if (!text) return [];
-  const lines = text.split('\n').filter(l => l.trim() !== '');
-  const results = [];
-  let dataStart = 0;
-  for (let i = 0; i < Math.min(10, lines.length); i++) {
-    if (lines[i].toLowerCase().includes('client') && (lines[i].toLowerCase().includes('status') || lines[i].toLowerCase().includes('shoot'))) {
-      dataStart = i + 1; break;
-    }
-  }
-  for (let i = dataStart; i < lines.length; i++) {
-    const cols = splitCSVLine(lines[i]);
-    const client = toStr(cols[1]) || toStr(cols[0]);
-    if (!client || client.toLowerCase() === 'none') continue;
-    results.push({
-      client: client,
-      date: toStr(cols[2]) || "TBD",
-      person: toStr(cols[5]) || toStr(cols[4]) || "Unassigned",
-      type: toStr(cols[6]) || toStr(cols[3]) || "-",
-      status: toStr(cols[7]) || toStr(cols[6]) || "Pending",
-    });
-  }
-  console.log("[CRM Sync] Shoots parsed:", results.length);
-  return results;
-};
-
-const parseEditorSheet = (text) => {
-  if (!text) return [];
-  const raw = text.replace(/\r\n/g, '\n');
-  let cleaned = '';
-  let inQuotes = false;
-  for (let i = 0; i < raw.length; i++) {
-    const ch = raw[i];
-    if (ch === '"') { inQuotes = !inQuotes; cleaned += ch; }
-    else if (ch === '\n' && inQuotes) { cleaned += ' '; }
-    else { cleaned += ch; }
-  }
-  const lines = cleaned.split('\n').filter(l => l.trim() !== '');
-  
-  const headerIdx = lines.findIndex(l => {
-    const lower = l.toLowerCase();
-    return (lower.includes('editor') && lower.includes('client')) || (lower.includes('editor') && lower.includes('target'));
-  });
-  if (headerIdx === -1) { console.log("[CRM Sync] Editor sheet: no header found"); return []; }
-  
+// ─── SHEET PARSERS (from JSON rows) ───
+const parseEditorFromJSON = (data) => {
+  if (!data) return [];
+  const { rows } = data;
   const knownEditors = ['dharmesh','pradip','kushani','aashlesha','keyur','kaushik','kinjal','mandar','ronit','krushang'];
-  
   let currentEditor = null;
   const editorsMap = {};
   
-  for (let i = headerIdx + 1; i < lines.length; i++) {
-    const cols = splitCSVLine(lines[i]);
-    let col0 = toStr(cols[0]).replace(/\n/g, ' ').trim();
-    let col1 = toStr(cols[1]).replace(/\n/g, ' ').trim();
-    const col1Lower = col1.toLowerCase();
+  for (const row of rows) {
+    const col0 = toStr(row[0]);
+    const col1 = toStr(row[1]);
     const col0Lower = col0.toLowerCase();
+    const col1Lower = col1.toLowerCase();
     
     // Skip remark/extra rows
     if (col1Lower === 'remark' || col1Lower === 'extra') continue;
     
-    // TOTAL ROW — this is the ONLY source for daily values and totals
+    // TOTAL ROW — only source for daily values
     if (col1Lower === 'total' && currentEditor && editorsMap[currentEditor]) {
-      editorsMap[currentEditor].target = toNum(cols[2]);
+      editorsMap[currentEditor].target = toNum(row[2]);
       const daily = [];
       let total = 0;
-      for (let d = 0; d < 31; d++) {
-        const val = toNum(cols[3 + d]);
-        daily.push(val);
-        total += val;
-      }
+      for (let d = 0; d < 31; d++) { const val = toNum(row[3 + d]); daily.push(val); total += val; }
       editorsMap[currentEditor].daily = daily;
       editorsMap[currentEditor].total = total;
       editorsMap[currentEditor].achieved = total;
-      // Check for "Client Total" column (typically last meaningful column)
-      const lastCol = toNum(cols[cols.length - 1]);
-      const secondLast = toNum(cols[cols.length - 2]);
-      console.log(`[CRM Parse] ${currentEditor}: target=${editorsMap[currentEditor].target}, daily_sum=${total}`);
       continue;
     }
     
-    // Skip day number header rows (1,2,3...)
-    if (col0 === '' && col1 === '' ) continue;
+    // Skip empty rows and day headers
+    if (col0 === '' && col1 === '') continue;
     
-    // Check if this is an editor name row
+    // Editor name detection
     const isEditor = col0 !== '' && (
-      knownEditors.some(e => col0Lower.includes(e)) || 
-      (col0Lower !== 'editor' && col0Lower !== 'daily report' && col0Lower !== 'total' && 
+      knownEditors.some(e => col0Lower.includes(e)) ||
+      (col0Lower !== 'editor' && col0Lower !== 'daily report' && col0Lower !== 'total' &&
        col0.length > 2 && col0.length < 30 && isNaN(Number(col0)) &&
-       !col0.includes(',') && !col0.includes('Target') && !col0.includes('Cumulative'))
+       !col0.includes('Target') && !col0.includes('Cumulative'))
     );
     
     if (isEditor) {
@@ -371,54 +220,103 @@ const parseEditorSheet = (text) => {
       if (!editorsMap[currentEditor]) {
         editorsMap[currentEditor] = { name: currentEditor, clients: [], daily: Array(31).fill(0), total: 0, target: 0, achieved: 0, extra: 0, regularTarget: 192 };
       }
-      // If this row also has a client name, add it as a client (but do NOT sum daily values)
-      if (col1 && col1Lower !== 'total' && col1Lower !== 'remark' && col1Lower !== 'extra' && col1Lower !== '') {
+      if (col1 && col1Lower !== 'total' && col1Lower !== 'remark' && col1Lower !== 'extra') {
         editorsMap[currentEditor].clients.push(col1);
       }
       continue;
     }
     
-    // Regular client row — add client name only, do NOT sum daily values (Total row handles that)
-    if (currentEditor && col1 && col1Lower !== '' && col1Lower !== 'total' && col1Lower !== 'remark' && col1Lower !== 'extra' && col1Lower !== 'monthly summary') {
-      if (col1.length < 50 && !col1.includes('Target') && !col1.includes('Cumulative') && !col1.includes('Week')) {
-        editorsMap[currentEditor].clients.push(col1);
-      }
+    // Client row — name only
+    if (currentEditor && col1 && col1.length < 50 && !['total','remark','extra','monthly summary'].includes(col1Lower) && !col1.includes('Target')) {
+      editorsMap[currentEditor].clients.push(col1);
     }
   }
-  
-  const result = Object.values(editorsMap);
-  console.log("[CRM Sync] Editor sheet parsed:", result.length, "editors:", result.map(e => `${e.name}(${e.clients.length}cl, total:${e.total})`));
-  return result;
+  return Object.values(editorsMap);
 };
 
-const parseCalendarSheet = (text) => {
-  if (!text) return [];
-  const lines = text.split('\n').filter(l => l.trim() !== '');
-  const headerIdx = lines.findIndex(l => l.toLowerCase().includes('client') && l.toLowerCase().includes('target'));
-  if (headerIdx === -1) return [];
-  const result = [];
-  for (let i = headerIdx + 2; i < lines.length; i++) {
-    const cols = splitCSVLine(lines[i]);
-    if (cols[0] && cols[0] !== '') { result.push({ client: cols[0], target: parseInt(cols[1]) || 0, days: cols.slice(2, 33).map(v => v !== '' ? v : null) }); }
+const parseClientFromJSON = (data) => {
+  if (!data) return [];
+  const { rows } = data;
+  const results = [];
+  for (const row of rows) {
+    const client = toStr(row[3]) || toStr(row[2]) || toStr(row[1]);
+    if (!client || client.toLowerCase() === 'total' || client.toLowerCase() === 'client') continue;
+    results.push({
+      client, person: toStr(row[1]) || "Unassigned", smm: toStr(row[2]) || "Unassigned",
+      posts: toNum(row[6]), videos: toNum(row[7]), target: toNum(row[8]),
+      total: toNum(row[9]), status: toStr(row[10]) || "Pending",
+      remark: toStr(row[11]), pending: toNum(row[12]),
+    });
   }
-  console.log("[CRM Sync] Calendar parsed:", result.length, "clients");
-  return result;
+  return results;
 };
 
-const parseSocialMediaSheet = (text) => {
-  if (!text) return [];
-  const lines = text.split('\n').filter(l => l.trim() !== '');
-  const headerIdx = lines.findIndex(l => l.toLowerCase().includes('editor') && (l.toLowerCase().includes('smm') || l.toLowerCase().includes('client')));
-  if (headerIdx === -1) { console.log("[CRM Sync] SMM sheet: no header found"); return []; }
-  const result = [];
-  for (let i = headerIdx + 2; i < lines.length; i++) {
-    const cols = splitCSVLine(lines[i]);
-    const client = toStr(cols[2]) || toStr(cols[1]);
-    if (!client || client.toLowerCase() === 'total' || client.toLowerCase() === 'none') continue;
-    result.push({ editor: toStr(cols[0]) || "Unassigned", client: client, smm: toStr(cols[1]) || toStr(cols[2]) || "Unassigned", postTarget: toNum(cols[3]), postApproved: toNum(cols[4]), postUploaded: toNum(cols[5]), postPending: toNum(cols[6]), videoTarget: toNum(cols[7]), videoApproved: toNum(cols[8]), videoUploaded: toNum(cols[9]), videoPending: toNum(cols[10]), totalTarget: toNum(cols[11]), totalUploaded: toNum(cols[12]) });
+const parseStockFromJSON = (data) => {
+  if (!data) return [];
+  const { rows } = data;
+  const results = [];
+  for (const row of rows) {
+    const client = toStr(row[3]) || toStr(row[2]);
+    if (!client || client.toLowerCase() === 'total' || client.toLowerCase() === 'client') continue;
+    let priority = toStr(row[22]) || "SAFE";
+    priority = priority.replace(/[🟢🔴🟡\s]/g, '').trim() || "SAFE";
+    results.push({
+      client, postRemaining: toNum(row[9]), videoRemaining: toNum(row[16]),
+      totalApproved: toNum(row[19]), totalUploaded: toNum(row[20]),
+      totalTarget: toNum(row[18]), totalRemaining: toNum(row[21]),
+      priority, toProduce: toNum(row[23]),
+    });
   }
-  console.log("[CRM Sync] SMM parsed:", result.length, "clients");
-  return result;
+  return results;
+};
+
+const parseShootFromJSON = (data) => {
+  if (!data) return [];
+  const { rows } = data;
+  const results = [];
+  for (const row of rows) {
+    const client = toStr(row[1]) || toStr(row[0]);
+    if (!client || client.toLowerCase() === 'client') continue;
+    results.push({
+      client, date: toStr(row[2]) || "TBD",
+      person: toStr(row[5]) || "Unassigned", type: toStr(row[6]) || "-",
+      status: toStr(row[7]) || "Pending",
+    });
+  }
+  return results;
+};
+
+const parseSMMFromJSON = (data) => {
+  if (!data) return [];
+  const { rows } = data;
+  const results = [];
+  for (const row of rows) {
+    const client = toStr(row[2]) || toStr(row[1]);
+    if (!client || client.toLowerCase() === 'total' || client.toLowerCase() === 'client') continue;
+    results.push({
+      editor: toStr(row[0]) || "Unassigned", client, smm: toStr(row[1]) || "Unassigned",
+      postTarget: toNum(row[3]), postApproved: toNum(row[4]), postUploaded: toNum(row[5]),
+      postPending: toNum(row[6]), videoTarget: toNum(row[7]), videoApproved: toNum(row[8]),
+      videoUploaded: toNum(row[9]), videoPending: toNum(row[10]),
+      totalTarget: toNum(row[11]), totalUploaded: toNum(row[12]),
+    });
+  }
+  return results;
+};
+
+const parseCalendarFromJSON = (data) => {
+  if (!data) return [];
+  const { rows } = data;
+  const results = [];
+  for (const row of rows) {
+    const client = toStr(row[0]);
+    if (!client || client.toLowerCase() === 'client') continue;
+    results.push({
+      client, target: toNum(row[1]),
+      days: Array.from({length:31}, (_,i) => { const v = toStr(row[2+i]); return v || null; }),
+    });
+  }
+  return results;
 };
 
 // ─── HELPER COMPONENTS ───
@@ -471,22 +369,22 @@ export default function App() {
       id: "apr2026",
       label: "April 2026",
       sheetId: "1VatxpyfzKj-UujrInEx3-iWUdTK_PeVUa57ZKTOupZ4",
-      gids: {
-        postTeam: "0",
-        videoTeam: "585800266",
-        stockData: "1583394645",
-        socialMedia: "297690809",
-        shootSchedule: "251233280",
-        clientReport: "1961669140",
-        uploadCalendar: "3933890",
-        contentPlanner: "775996302",
+      tabs: {
+        postTeam: "Daily Report - Post Team",
+        videoTeam: "Daily Report - Video Team",
+        stockData: "Stock",
+        socialMedia: "Social Media Team Report",
+        shootSchedule: "Shoot Schedule",
+        clientReport: "Client Report.",
+        uploadCalendar: "Uploading Calender",
+        contentPlanner: "Content Planner_Post",
       }
     }
   ];
 
   const [months, setMonths] = useState(() => {
     try {
-      const saved = localStorage.getItem('infinizio_months');
+      const saved = localStorage.getItem('infinizio_months_v2');
       if (saved) { const parsed = JSON.parse(saved); if (parsed.length > 0) return parsed; }
     } catch(e) {}
     return DEFAULT_MONTHS;
@@ -497,152 +395,101 @@ export default function App() {
       const saved = localStorage.getItem('infinizio_active_month');
       if (saved) return saved;
     } catch(e) {}
-    // Default to the LAST month in the list (most recent)
     return DEFAULT_MONTHS[DEFAULT_MONTHS.length - 1].id;
   });
 
-  const [newMonth, setNewMonth] = useState({ label: "", sheetId: "", gids: { postTeam:"", videoTeam:"", stockData:"", socialMedia:"", shootSchedule:"", clientReport:"", uploadCalendar:"", contentPlanner:"" } });
+  const [newMonth, setNewMonth] = useState({ label: "", sheetId: "", tabs: { postTeam:"Daily Report - Post Team", videoTeam:"Daily Report - Video Team", stockData:"Stock", socialMedia:"Social Media Team Report", shootSchedule:"Shoot Schedule", clientReport:"Client Report.", uploadCalendar:"Uploading Calender", contentPlanner:"Content Planner_Post" } });
 
   const activeMonth = months.find(m => m.id === activeMonthId) || months[0];
 
-  const buildUrl = (sheetId, gid) => `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:csv&gid=${gid}`;
+  // Full sync function using JSON API
+  const doFullSync = async (month) => {
+    const sid = month.sheetId;
+    const tabs = month.tabs;
+    const newData = { ...data };
+    let anySuccess = false;
+    console.log(`[CRM] Starting JSON sync for ${month.label}...`);
 
-  const [urls, setUrls] = useState({
-    postTeam: buildUrl(activeMonth.sheetId, activeMonth.gids.postTeam),
-    videoTeam: buildUrl(activeMonth.sheetId, activeMonth.gids.videoTeam),
-    stockData: buildUrl(activeMonth.sheetId, activeMonth.gids.stockData),
-    socialMedia: buildUrl(activeMonth.sheetId, activeMonth.gids.socialMedia),
-    shootSchedule: buildUrl(activeMonth.sheetId, activeMonth.gids.shootSchedule),
-    clientReport: buildUrl(activeMonth.sheetId, activeMonth.gids.clientReport),
-    uploadCalendar: buildUrl(activeMonth.sheetId, activeMonth.gids.uploadCalendar),
-    contentPlanner: buildUrl(activeMonth.sheetId, activeMonth.gids.contentPlanner),
-  });
+    const clientData = await fetchSheetJSON(sid, tabs.clientReport);
+    if (clientData) { const r = parseClientFromJSON(clientData); if (r.length > 0) { newData.clients = r; anySuccess = true; } }
+
+    const stockData = await fetchSheetJSON(sid, tabs.stockData);
+    if (stockData) { const r = parseStockFromJSON(stockData); if (r.length > 0) { newData.stock = r; anySuccess = true; } }
+
+    const shootData = await fetchSheetJSON(sid, tabs.shootSchedule);
+    if (shootData) { const r = parseShootFromJSON(shootData); if (r.length > 0) { newData.shoots = r; anySuccess = true; } }
+
+    const postData = await fetchSheetJSON(sid, tabs.postTeam);
+    if (postData) { const r = parseEditorFromJSON(postData); if (r.length > 0) { newData.postEditors = r; anySuccess = true; } }
+
+    const videoData = await fetchSheetJSON(sid, tabs.videoTeam);
+    if (videoData) { const r = parseEditorFromJSON(videoData); if (r.length > 0) { newData.videoEditors = r; anySuccess = true; } }
+
+    const calData = await fetchSheetJSON(sid, tabs.uploadCalendar);
+    if (calData) { const r = parseCalendarFromJSON(calData); if (r.length > 0) { newData.uploadCalendar = r; anySuccess = true; } }
+
+    const planData = await fetchSheetJSON(sid, tabs.contentPlanner);
+    if (planData) { const r = parseEditorFromJSON(planData); if (r.length > 0) { newData.contentPlanner = r; anySuccess = true; } }
+
+    const smmData = await fetchSheetJSON(sid, tabs.socialMedia);
+    if (smmData) { const r = parseSMMFromJSON(smmData); if (r.length > 0) { newData.socialMedia = r; anySuccess = true; } }
+
+    setData(newData);
+    if (anySuccess) setLastSynced(new Date());
+    console.log(`[CRM] Sync done. Success: ${anySuccess} | Clients: ${newData.clients.length} | Stock: ${newData.stock.length} | PostEditors: ${newData.postEditors.length}`);
+    return anySuccess;
+  };
 
   const switchMonth = (monthId) => {
     const month = months.find(m => m.id === monthId);
     if (!month) return;
     setActiveMonthId(monthId);
     localStorage.setItem('infinizio_active_month', monthId);
-    const newUrls = {
-      postTeam: buildUrl(month.sheetId, month.gids.postTeam),
-      videoTeam: buildUrl(month.sheetId, month.gids.videoTeam),
-      stockData: buildUrl(month.sheetId, month.gids.stockData),
-      socialMedia: buildUrl(month.sheetId, month.gids.socialMedia),
-      shootSchedule: buildUrl(month.sheetId, month.gids.shootSchedule),
-      clientReport: buildUrl(month.sheetId, month.gids.clientReport),
-      uploadCalendar: buildUrl(month.sheetId, month.gids.uploadCalendar),
-      contentPlanner: buildUrl(month.sheetId, month.gids.contentPlanner),
-    };
-    setUrls(newUrls);
-    // Trigger re-sync with new month
-    setTimeout(() => { setSyncStatus({ loading: true, message: `Loading ${month.label}...`, error: false }); doFullSync(newUrls).then(success => { setSyncStatus({ loading: false, message: success ? `Live — ${month.label}` : "Using saved data", error: false }); }); }, 100);
+    setSyncStatus({ loading: true, message: `Loading ${month.label}...`, error: false });
+    doFullSync(month).then(success => {
+      setSyncStatus({ loading: false, message: success ? `Live — ${month.label}` : "Using saved data", error: !success });
+    });
   };
 
   const addMonth = () => {
-    if (!newMonth.label || !newMonth.sheetId || !newMonth.gids.clientReport) return;
+    if (!newMonth.label || !newMonth.sheetId) return;
     const id = newMonth.label.toLowerCase().replace(/\s+/g, '').replace(/[^a-z0-9]/g, '');
-    const updated = [...months, { id, label: newMonth.label, sheetId: newMonth.sheetId, gids: newMonth.gids }];
+    const updated = [...months, { id, label: newMonth.label, sheetId: newMonth.sheetId, tabs: newMonth.tabs }];
     setMonths(updated);
-    localStorage.setItem('infinizio_months', JSON.stringify(updated));
-    setNewMonth({ label: "", sheetId: "", gids: { postTeam:"", videoTeam:"", stockData:"", socialMedia:"", shootSchedule:"", clientReport:"", uploadCalendar:"", contentPlanner:"" } });
+    localStorage.setItem('infinizio_months_v2', JSON.stringify(updated));
+    setNewMonth({ label: "", sheetId: "", tabs: { postTeam:"Daily Report - Post Team", videoTeam:"Daily Report - Video Team", stockData:"Stock", socialMedia:"Social Media Team Report", shootSchedule:"Shoot Schedule", clientReport:"Client Report.", uploadCalendar:"Uploading Calender", contentPlanner:"Content Planner_Post" } });
   };
 
   const deleteMonth = (monthId) => {
     if (months.length <= 1) return;
     const updated = months.filter(m => m.id !== monthId);
     setMonths(updated);
-    localStorage.setItem('infinizio_months', JSON.stringify(updated));
+    localStorage.setItem('infinizio_months_v2', JSON.stringify(updated));
     if (activeMonthId === monthId) switchMonth(updated[0].id);
+  };
+
+  // Auto-sync on mount
+  useEffect(() => {
+    setSyncStatus({ loading: true, message: "Connecting to Google Sheets...", error: false });
+    doFullSync(activeMonth).then(success => {
+      setSyncStatus({ loading: false, message: success ? `Live — ${activeMonth.label}` : "Using saved data", error: false });
+    }).catch(err => {
+      console.error("[CRM] Auto-sync error:", err);
+      setSyncStatus({ loading: false, message: "Using saved data", error: false });
+    });
+  }, []);
+
+  const syncData = async () => {
+    setSyncStatus({ loading: true, message: "Fetching live data...", error: false });
+    const success = await doFullSync(activeMonth);
+    setSyncStatus({ loading: false, message: success ? "Sync successful!" : "Sync failed — check console", error: !success });
+    if (success) setTimeout(() => setSyncStatus({ loading: false, message: `Live — ${activeMonth.label}`, error: false }), 3000);
   };
   const [syncStatus, setSyncStatus] = useState({ loading: false, message: "Using saved data", error: false });
   const [initialSyncDone, setInitialSyncDone] = useState(false);
   const [lastSynced, setLastSynced] = useState(null);
 
   // Full sync function
-  const doFullSync = async (activeUrls, isAuto = false) => {
-    const newData = { ...data };
-    let anySuccess = false;
-    console.log("[CRM] Starting sync...");
-
-    const clientText = await smartFetch(activeUrls.clientReport);
-    if (clientText) { const r = parseClientReport(clientText); if (r.length > 0) { newData.clients = r; anySuccess = true; } }
-
-    const stockText = await smartFetch(activeUrls.stockData);
-    if (stockText) { const r = parseStockSheet(stockText); if (r.length > 0) { newData.stock = r; anySuccess = true; } }
-
-    const shootText = await smartFetch(activeUrls.shootSchedule);
-    if (shootText) { const r = parseShootSheet(shootText); if (r.length > 0) { newData.shoots = r; anySuccess = true; } }
-
-    const postText = await smartFetch(activeUrls.postTeam);
-    if (postText) { const r = parseEditorSheet(postText); if (r.length > 0) { newData.postEditors = r; anySuccess = true; } }
-
-    const videoText = await smartFetch(activeUrls.videoTeam);
-    if (videoText) { const r = parseEditorSheet(videoText); if (r.length > 0) { newData.videoEditors = r; anySuccess = true; } }
-
-    const calText = await smartFetch(activeUrls.uploadCalendar);
-    if (calText) { const r = parseCalendarSheet(calText); if (r.length > 0) { newData.uploadCalendar = r; anySuccess = true; } }
-
-    const planText = await smartFetch(activeUrls.contentPlanner);
-    if (planText) { const r = parseEditorSheet(planText); if (r.length > 0) { newData.contentPlanner = r; anySuccess = true; } }
-
-    const smmText = await smartFetch(activeUrls.socialMedia);
-    if (smmText) { const r = parseSocialMediaSheet(smmText); if (r.length > 0) { newData.socialMedia = r; anySuccess = true; } }
-
-    setData(newData);
-    if (anySuccess) setLastSynced(new Date());
-    console.log("[CRM] Sync done. Success:", anySuccess, "Clients:", newData.clients.length, "Stock:", newData.stock.length);
-    return anySuccess;
-  };
-
-  // Auto-sync on mount
-  useEffect(() => {
-    const loadAndSync = async () => {
-      let activeUrls = urls;
-      try {
-        const stored = localStorage.getItem('infinizio_urls');
-        if (stored) {
-          const parsed = JSON.parse(stored);
-          const hasStored = Object.values(parsed).some(u => u !== "");
-          if (hasStored) { activeUrls = parsed; setUrls(parsed); }
-        }
-      } catch(e) {}
-      setSyncStatus({ loading: true, message: "Connecting to Google Sheets...", error: false });
-      try {
-        const success = await doFullSync(activeUrls, true);
-        setSyncStatus({ loading: false, message: success ? "Live — synced from Google Sheets" : "Using saved data", error: false });
-      } catch (err) {
-        console.error("[CRM] Auto-sync error:", err);
-        setSyncStatus({ loading: false, message: "Using saved data", error: false });
-      }
-      setInitialSyncDone(true);
-    };
-    loadAndSync();
-  }, []);
-
-  const handleUrlChange = (e) => {
-    const { name, value } = e.target;
-    const newUrls = { ...urls, [name]: value };
-    setUrls(newUrls);
-    try { localStorage.setItem('infinizio_urls', JSON.stringify(newUrls)); } catch(e) {}
-  };
-
-  const syncData = async () => {
-    setSyncStatus({ loading: true, message: "Fetching live data...", error: false });
-    try {
-      const success = await doFullSync(urls);
-      if (success) {
-        setSyncStatus({ loading: false, message: "Sync successful!", error: false });
-        setTimeout(() => setSyncStatus({ loading: false, message: "Live", error: false }), 3000);
-        setActiveSection("overview");
-      } else {
-        setSyncStatus({ loading: false, message: "No data found — check sheet publish settings", error: true });
-      }
-    } catch (err) {
-      console.error("[CRM] Sync error:", err);
-      setSyncStatus({ loading: false, message: "Sync failed — check console (F12)", error: true });
-    }
-  };
-
   // ─── THEME ───
   const t = isDark ? {
     bg: '#0A0A0C', card: '#14141A', cardBorder: 'rgba(255,255,255,0.05)', text: '#E8E8EC', textMuted: '#71717A', textDim: '#52525B',
@@ -832,18 +679,18 @@ export default function App() {
                     </div>
                     <div className="grid grid-cols-2 gap-3">
                       {[
-                        {key:"postTeam",label:"Post Team GID"},
-                        {key:"videoTeam",label:"Video Team GID"},
-                        {key:"stockData",label:"Stock GID"},
-                        {key:"socialMedia",label:"Social Media GID"},
-                        {key:"shootSchedule",label:"Shoot Schedule GID"},
-                        {key:"clientReport",label:"Client Report GID"},
-                        {key:"uploadCalendar",label:"Upload Calendar GID"},
-                        {key:"contentPlanner",label:"Content Planner GID"},
+                        {key:"postTeam",label:"Post Team Tab Name"},
+                        {key:"videoTeam",label:"Video Team Tab Name"},
+                        {key:"stockData",label:"Stock Tab Name"},
+                        {key:"socialMedia",label:"Social Media Tab Name"},
+                        {key:"shootSchedule",label:"Shoot Schedule Tab Name"},
+                        {key:"clientReport",label:"Client Report Tab Name"},
+                        {key:"uploadCalendar",label:"Upload Calendar Tab Name"},
+                        {key:"contentPlanner",label:"Content Planner Tab Name"},
                       ].map(f => (
                         <div key={f.key}>
                           <label className="block text-[10px] font-bold uppercase tracking-wider mb-1 text-slate-500">{f.label}</label>
-                          <input type="text" value={newMonth.gids[f.key]} onChange={e => setNewMonth({...newMonth, gids: {...newMonth.gids, [f.key]: e.target.value}})} placeholder="e.g. 0, 585800266" className="w-full bg-slate-100 dark:bg-black/30 border border-slate-300 dark:border-white/10 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-red-500" />
+                          <input type="text" value={newMonth.tabs[f.key]} onChange={e => setNewMonth({...newMonth, tabs: {...newMonth.tabs, [f.key]: e.target.value}})} placeholder={f.label} className="w-full bg-slate-100 dark:bg-black/30 border border-slate-300 dark:border-white/10 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-red-500" />
                         </div>
                       ))}
                     </div>
@@ -855,10 +702,10 @@ export default function App() {
                 <div className="rounded-xl p-5 border border-amber-200 bg-amber-50 dark:border-amber-500/20 dark:bg-amber-500/5 text-sm text-amber-800 dark:text-amber-400">
                   <h4 className="font-bold mb-2">How to add a new month:</h4>
                   <div style={{lineHeight:1.8}}>
-                    1. Duplicate your mastersheet for the new month<br/>
+                    1. Duplicate your mastersheet for the new month (keep same tab names)<br/>
                     2. Share it: <strong>Share → Anyone with the link → Viewer</strong><br/>
                     3. Copy the Sheet ID from the URL (between /d/ and /edit)<br/>
-                    4. Click each tab and note the gid= number from the URL<br/>
+                    4. Tab names are pre-filled — only change if your tabs are named differently<br/>
                     5. Fill in the form above and click "Add month"
                   </div>
                 </div>
