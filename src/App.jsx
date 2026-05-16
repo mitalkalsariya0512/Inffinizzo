@@ -319,6 +319,29 @@ const parseCalendarFromJSON = (data) => {
   return results;
 };
 
+const parseWebsiteFromJSON = (data) => {
+  if (!data) return [];
+  const { rows } = data;
+  const results = [];
+  for (const row of rows) {
+    const sr = toNum(row[0]);
+    const client = toStr(row[1]);
+    if (!client || client.toLowerCase() === 'client name' || client.toLowerCase() === 'sr.#' || client === '-') continue;
+    const status = toStr(row[5]);
+    let progress = 0;
+    if (status === 'Completed') progress = 100;
+    else if (status.includes('%')) progress = parseInt(status) || 0;
+    results.push({
+      sr, client, projectType: toStr(row[2]), startDate: toStr(row[3]),
+      currentStage: toStr(row[4]), status, progress,
+      deadline: toStr(row[6]), pendingFrom: toStr(row[7]),
+      revisions: toNum(row[8]), remarks: toStr(row[9]),
+    });
+  }
+  console.log("[CRM Sync] Website parsed:", results.length, "projects");
+  return results;
+};
+
 // ─── HELPER COMPONENTS ───
 function DonutChart({ value, max, size = 80, color = "#DC2626", label, isDark }) {
   const pct = Math.min((value / max) * 100, 100);
@@ -351,6 +374,7 @@ const NAV = [
   { id: "social", label: "Social Media", icon: "◈" },
   { id: "stock", label: "Stock / Assets", icon: "▣" },
   { id: "shoots", label: "Shoot Schedule", icon: "◉" },
+  { id: "website", label: "Website Dev", icon: "◐" },
   { id: "clients", label: "Client Reports", icon: "◇" },
   { id: "calendar", label: "Upload Calendar", icon: "▤" },
   { id: "sync", label: "Month Manager", icon: "📅" },
@@ -361,10 +385,15 @@ export default function App() {
   const [activeSection, setActiveSection] = useState("overview");
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [isDark, setIsDark] = useState(true);
-  const [data, setData] = useState({ clients: DEFAULT_CLIENT_REPORT, shoots: DEFAULT_SHOOT_SCHEDULE, postEditors: DEFAULT_POST_EDITORS, videoEditors: DEFAULT_VIDEO_EDITORS, stock: DEFAULT_STOCK_DATA, uploadCalendar: [], contentPlanner: [], socialMedia: DEFAULT_SOCIAL_MEDIA });
+  const [data, setData] = useState({ clients: DEFAULT_CLIENT_REPORT, shoots: DEFAULT_SHOOT_SCHEDULE, postEditors: DEFAULT_POST_EDITORS, videoEditors: DEFAULT_VIDEO_EDITORS, stock: DEFAULT_STOCK_DATA, uploadCalendar: [], contentPlanner: [], socialMedia: DEFAULT_SOCIAL_MEDIA, website: [] });
 
-  // ─── MONTH CONFIGURATION SYSTEM ───
-  const DEFAULT_MONTHS = [
+  // ─── MONTH CONFIGURATION ───
+  // All months are hardcoded here. To add a new month:
+  // 1. Create a new Google Sheet with the same tab names
+  // 2. Share as "Anyone with the link → Viewer"
+  // 3. Add entry below with the Sheet ID and update on GitHub
+  // 4. Vercel auto-deploys → everyone sees the new month instantly
+  const ALL_MONTHS = [
     {
       id: "apr2026",
       label: "April 2026",
@@ -378,29 +407,21 @@ export default function App() {
         clientReport: "Client Report.",
         uploadCalendar: "Uploading Calender",
         contentPlanner: "Content Planner_Post",
+        website: "Website",
       }
-    }
+    },
+    // ── ADD NEW MONTHS BELOW ──
+    // {
+    //   id: "may2026",
+    //   label: "May 2026",
+    //   sheetId: "PASTE_MAY_SHEET_ID_HERE",
+    //   tabs: { postTeam: "Daily Report - Post Team", videoTeam: "Daily Report - Video Team", stockData: "Stock", socialMedia: "Social Media Team Report", shootSchedule: "Shoot Schedule", clientReport: "Client Report.", uploadCalendar: "Uploading Calender", contentPlanner: "Content Planner_Post" }
+    // },
   ];
 
-  const [months, setMonths] = useState(() => {
-    try {
-      const saved = localStorage.getItem('infinizio_months_v2');
-      if (saved) { const parsed = JSON.parse(saved); if (parsed.length > 0) return parsed; }
-    } catch(e) {}
-    return DEFAULT_MONTHS;
-  });
-
-  const [activeMonthId, setActiveMonthId] = useState(() => {
-    try {
-      const saved = localStorage.getItem('infinizio_active_month');
-      if (saved) return saved;
-    } catch(e) {}
-    return DEFAULT_MONTHS[DEFAULT_MONTHS.length - 1].id;
-  });
-
-  const [newMonth, setNewMonth] = useState({ label: "", sheetId: "", tabs: { postTeam:"Daily Report - Post Team", videoTeam:"Daily Report - Video Team", stockData:"Stock", socialMedia:"Social Media Team Report", shootSchedule:"Shoot Schedule", clientReport:"Client Report.", uploadCalendar:"Uploading Calender", contentPlanner:"Content Planner_Post" } });
-
-  const activeMonth = months.find(m => m.id === activeMonthId) || months[0];
+  // Default to the LAST month (most recent) — works the same on every browser/device
+  const [activeMonthId, setActiveMonthId] = useState(ALL_MONTHS[ALL_MONTHS.length - 1].id);
+  const activeMonth = ALL_MONTHS.find(m => m.id === activeMonthId) || ALL_MONTHS[ALL_MONTHS.length - 1];
 
   // Full sync function using JSON API
   const doFullSync = async (month) => {
@@ -434,6 +455,11 @@ export default function App() {
     const smmData = await fetchSheetJSON(sid, tabs.socialMedia);
     if (smmData) { const r = parseSMMFromJSON(smmData); if (r.length > 0) { newData.socialMedia = r; anySuccess = true; } }
 
+    if (tabs.website) {
+      const webData = await fetchSheetJSON(sid, tabs.website);
+      if (webData) { const r = parseWebsiteFromJSON(webData); if (r.length > 0) { newData.website = r; anySuccess = true; } }
+    }
+
     setData(newData);
     if (anySuccess) setLastSynced(new Date());
     console.log(`[CRM] Sync done. Success: ${anySuccess} | Clients: ${newData.clients.length} | Stock: ${newData.stock.length} | PostEditors: ${newData.postEditors.length}`);
@@ -441,31 +467,13 @@ export default function App() {
   };
 
   const switchMonth = (monthId) => {
-    const month = months.find(m => m.id === monthId);
+    const month = ALL_MONTHS.find(m => m.id === monthId);
     if (!month) return;
     setActiveMonthId(monthId);
-    localStorage.setItem('infinizio_active_month', monthId);
     setSyncStatus({ loading: true, message: `Loading ${month.label}...`, error: false });
     doFullSync(month).then(success => {
       setSyncStatus({ loading: false, message: success ? `Live — ${month.label}` : "Using saved data", error: !success });
     });
-  };
-
-  const addMonth = () => {
-    if (!newMonth.label || !newMonth.sheetId) return;
-    const id = newMonth.label.toLowerCase().replace(/\s+/g, '').replace(/[^a-z0-9]/g, '');
-    const updated = [...months, { id, label: newMonth.label, sheetId: newMonth.sheetId, tabs: newMonth.tabs }];
-    setMonths(updated);
-    localStorage.setItem('infinizio_months_v2', JSON.stringify(updated));
-    setNewMonth({ label: "", sheetId: "", tabs: { postTeam:"Daily Report - Post Team", videoTeam:"Daily Report - Video Team", stockData:"Stock", socialMedia:"Social Media Team Report", shootSchedule:"Shoot Schedule", clientReport:"Client Report.", uploadCalendar:"Uploading Calender", contentPlanner:"Content Planner_Post" } });
-  };
-
-  const deleteMonth = (monthId) => {
-    if (months.length <= 1) return;
-    const updated = months.filter(m => m.id !== monthId);
-    setMonths(updated);
-    localStorage.setItem('infinizio_months_v2', JSON.stringify(updated));
-    if (activeMonthId === monthId) switchMonth(updated[0].id);
   };
 
   // Auto-sync on mount
@@ -616,7 +624,7 @@ export default function App() {
             {/* MONTH SELECTOR */}
             <select value={activeMonthId} onChange={(e) => switchMonth(e.target.value)}
               style={{padding:'5px 10px',fontSize:11,fontWeight:600,borderRadius:8,border:`1px solid ${t.cardBorder}`,background:t.card,color:'#DC2626',cursor:'pointer',minWidth:120}}>
-              {months.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}
+              {ALL_MONTHS.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}
             </select>
             <button onClick={() => setIsDark(!isDark)} style={{padding:'5px 12px',fontSize:11,fontWeight:700,borderRadius:8,border:`1px solid ${t.cardBorder}`,background:t.card,color:t.text,cursor:'pointer',display:'flex',alignItems:'center',gap:4}}>
               {isDark ? "☀ Light" : "☾ Dark"}
@@ -634,24 +642,23 @@ export default function App() {
 
         <div style={{padding:24}}>
 
-            {/* ═══ DATA SYNC ═══ */}
+            {/* ═══ MONTH MANAGER ═══ */}
             {activeSection === "sync" && (
               <div className="max-w-3xl mx-auto space-y-6">
-                {/* CURRENT MONTH */}
+                {/* AVAILABLE MONTHS */}
                 <div className="rounded-xl p-6 border border-slate-200 bg-white shadow-sm dark:shadow-none dark:border-white/5 dark:bg-white/[0.02]">
                   <h2 className="text-xl font-bold mb-1">📅 Month Manager</h2>
-                  <p className="text-sm opacity-70 mb-6">Switch between months or add new monthly sheets. Each month connects to its own Google Sheet.</p>
+                  <p className="text-sm opacity-70 mb-6">Switch between months. Every user on every device sees the same months — no setup needed.</p>
 
                   <div className="space-y-3 mb-6">
-                    {months.map(m => (
+                    {ALL_MONTHS.map(m => (
                       <div key={m.id} style={{display:'flex',alignItems:'center',gap:12,padding:'12px 16px',borderRadius:10,background:m.id===activeMonthId?'rgba(220,38,38,0.05)':'transparent',border:`1px solid ${m.id===activeMonthId?'rgba(220,38,38,0.2)':'rgba(0,0,0,0.05)'}`}}>
                         <div style={{width:10,height:10,borderRadius:'50%',background:m.id===activeMonthId?'#DC2626':'#D1D5DB',flexShrink:0}}/>
                         <div style={{flex:1}}>
                           <div style={{fontWeight:600,fontSize:14,color:m.id===activeMonthId?'#DC2626':undefined}}>{m.label}</div>
-                          <div style={{fontSize:10,opacity:0.5,fontFamily:'monospace',marginTop:2}}>Sheet: {m.sheetId.substring(0,20)}...</div>
+                          <div style={{fontSize:10,opacity:0.5,fontFamily:'monospace',marginTop:2}}>Sheet: {m.sheetId.substring(0,25)}...</div>
                         </div>
                         <button onClick={() => switchMonth(m.id)} style={{padding:'5px 14px',borderRadius:6,border:'1px solid #DC2626',background:m.id===activeMonthId?'#DC2626':'transparent',color:m.id===activeMonthId?'#fff':'#DC2626',fontSize:11,fontWeight:600,cursor:'pointer'}}>{m.id===activeMonthId?'✓ Active':'Switch'}</button>
-                        {months.length > 1 && <button onClick={() => deleteMonth(m.id)} style={{padding:'5px 10px',borderRadius:6,border:'1px solid rgba(0,0,0,0.1)',background:'transparent',color:'#999',fontSize:11,cursor:'pointer'}}>✕</button>}
                       </div>
                     ))}
                   </div>
@@ -661,52 +668,64 @@ export default function App() {
                     <button onClick={syncData} disabled={syncStatus.loading} className="bg-red-600 hover:bg-red-700 text-white font-bold py-3 px-8 rounded-xl transition-all shadow-lg flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed">{syncStatus.loading ? "↻ Syncing..." : `🔄 Sync ${activeMonth.label}`}</button>
                     {syncStatus.message && <span className={`text-sm font-bold bg-slate-50 dark:bg-black/30 px-4 py-2 rounded-lg ${syncStatus.error ? 'text-red-500' : 'text-emerald-600 dark:text-emerald-400'}`}>{syncStatus.message}</span>}
                   </div>
+                  {lastSynced && <div style={{fontSize:11,opacity:0.5,marginTop:4}}>Last synced: {lastSynced.toLocaleString('en-IN')}</div>}
                 </div>
 
-                {/* ADD NEW MONTH */}
+                {/* HOW TO ADD A NEW MONTH */}
                 <div className="rounded-xl p-6 border border-slate-200 bg-white shadow-sm dark:shadow-none dark:border-white/5 dark:bg-white/[0.02]">
-                  <h3 className="text-lg font-bold mb-1">➕ Add new month</h3>
-                  <p className="text-sm opacity-70 mb-4">Create a new Google Sheet with the same tab structure, share it as "Anyone with the link", then paste the details below.</p>
+                  <h3 className="text-lg font-bold mb-1">➕ How to add a new month</h3>
+                  <p className="text-sm opacity-70 mb-4">Adding a new month takes 2 minutes. Changes apply to ALL users on ALL devices instantly.</p>
 
-                  <div className="space-y-3">
-                    <div>
-                      <label className="block text-[11px] font-bold uppercase tracking-wider mb-1 text-red-600">Month name</label>
-                      <input type="text" value={newMonth.label} onChange={e => setNewMonth({...newMonth, label: e.target.value})} placeholder="May 2026" className="w-full bg-slate-100 dark:bg-black/30 border border-slate-300 dark:border-white/10 rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:border-red-500" />
+                  <div className="space-y-4 text-sm" style={{lineHeight:1.8}}>
+                    <div style={{padding:'12px 16px',borderRadius:10,background:'rgba(220,38,38,0.03)',border:'1px solid rgba(220,38,38,0.1)'}}>
+                      <div style={{fontWeight:700,color:'#DC2626',marginBottom:4}}>Step 1: Create the new month's Google Sheet</div>
+                      <div style={{opacity:0.7}}>Duplicate your mastersheet → rename to "Mastersheet - May" → keep the same tab names</div>
                     </div>
-                    <div>
-                      <label className="block text-[11px] font-bold uppercase tracking-wider mb-1 text-red-600">Google Sheet ID</label>
-                      <input type="text" value={newMonth.sheetId} onChange={e => setNewMonth({...newMonth, sheetId: e.target.value})} placeholder="Paste the ID from the URL: docs.google.com/spreadsheets/d/THIS_PART/edit" className="w-full bg-slate-100 dark:bg-black/30 border border-slate-300 dark:border-white/10 rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:border-red-500" />
+                    <div style={{padding:'12px 16px',borderRadius:10,background:'rgba(220,38,38,0.03)',border:'1px solid rgba(220,38,38,0.1)'}}>
+                      <div style={{fontWeight:700,color:'#DC2626',marginBottom:4}}>Step 2: Share the sheet</div>
+                      <div style={{opacity:0.7}}>Click Share → "Anyone with the link" → Viewer → Done</div>
                     </div>
-                    <div className="grid grid-cols-2 gap-3">
-                      {[
-                        {key:"postTeam",label:"Post Team Tab Name"},
-                        {key:"videoTeam",label:"Video Team Tab Name"},
-                        {key:"stockData",label:"Stock Tab Name"},
-                        {key:"socialMedia",label:"Social Media Tab Name"},
-                        {key:"shootSchedule",label:"Shoot Schedule Tab Name"},
-                        {key:"clientReport",label:"Client Report Tab Name"},
-                        {key:"uploadCalendar",label:"Upload Calendar Tab Name"},
-                        {key:"contentPlanner",label:"Content Planner Tab Name"},
-                      ].map(f => (
-                        <div key={f.key}>
-                          <label className="block text-[10px] font-bold uppercase tracking-wider mb-1 text-slate-500">{f.label}</label>
-                          <input type="text" value={newMonth.tabs[f.key]} onChange={e => setNewMonth({...newMonth, tabs: {...newMonth.tabs, [f.key]: e.target.value}})} placeholder={f.label} className="w-full bg-slate-100 dark:bg-black/30 border border-slate-300 dark:border-white/10 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-red-500" />
-                        </div>
-                      ))}
+                    <div style={{padding:'12px 16px',borderRadius:10,background:'rgba(220,38,38,0.03)',border:'1px solid rgba(220,38,38,0.1)'}}>
+                      <div style={{fontWeight:700,color:'#DC2626',marginBottom:4}}>Step 3: Copy the Sheet ID</div>
+                      <div style={{opacity:0.7}}>From the URL: docs.google.com/spreadsheets/d/<strong style={{color:'#DC2626'}}>THIS_PART</strong>/edit</div>
                     </div>
-                    <button onClick={addMonth} style={{width:'100%',padding:'12px',borderRadius:10,border:'none',background:'#DC2626',color:'#fff',fontSize:13,fontWeight:700,cursor:'pointer',marginTop:8}}>Add month to dashboard</button>
+                    <div style={{padding:'12px 16px',borderRadius:10,background:'rgba(220,38,38,0.03)',border:'1px solid rgba(220,38,38,0.1)'}}>
+                      <div style={{fontWeight:700,color:'#DC2626',marginBottom:4}}>Step 4: Update the code on GitHub</div>
+                      <div style={{opacity:0.7}}>Go to GitHub → <code style={{background:'rgba(0,0,0,0.05)',padding:'2px 6px',borderRadius:4}}>src/App.jsx</code> → Edit → Find <code style={{background:'rgba(0,0,0,0.05)',padding:'2px 6px',borderRadius:4}}>ALL_MONTHS</code> → Add a new entry:</div>
+                      <pre style={{background:'rgba(0,0,0,0.05)',padding:'12px',borderRadius:8,marginTop:8,fontSize:11,overflowX:'auto',fontFamily:'monospace',lineHeight:1.6}}>
+{`{
+  id: "may2026",
+  label: "May 2026",
+  sheetId: "PASTE_YOUR_MAY_SHEET_ID_HERE",
+  tabs: {
+    postTeam: "Daily Report - Post Team",
+    videoTeam: "Daily Report - Video Team",
+    stockData: "Stock",
+    socialMedia: "Social Media Team Report",
+    shootSchedule: "Shoot Schedule",
+    clientReport: "Client Report.",
+    uploadCalendar: "Uploading Calender",
+    contentPlanner: "Content Planner_Post",
+    website: "Website",
+  }
+},`}
+                      </pre>
+                    </div>
+                    <div style={{padding:'12px 16px',borderRadius:10,background:'rgba(220,38,38,0.03)',border:'1px solid rgba(220,38,38,0.1)'}}>
+                      <div style={{fontWeight:700,color:'#DC2626',marginBottom:4}}>Step 5: Commit → Auto-deploy</div>
+                      <div style={{opacity:0.7}}>Click "Commit changes" → Vercel auto-deploys in 30 seconds → Everyone sees May in the dropdown instantly</div>
+                    </div>
                   </div>
                 </div>
 
-                {/* INSTRUCTIONS */}
+                {/* CURRENT CONFIG */}
                 <div className="rounded-xl p-5 border border-amber-200 bg-amber-50 dark:border-amber-500/20 dark:bg-amber-500/5 text-sm text-amber-800 dark:text-amber-400">
-                  <h4 className="font-bold mb-2">How to add a new month:</h4>
+                  <h4 className="font-bold mb-2">Current configuration:</h4>
                   <div style={{lineHeight:1.8}}>
-                    1. Duplicate your mastersheet for the new month (keep same tab names)<br/>
-                    2. Share it: <strong>Share → Anyone with the link → Viewer</strong><br/>
-                    3. Copy the Sheet ID from the URL (between /d/ and /edit)<br/>
-                    4. Tab names are pre-filled — only change if your tabs are named differently<br/>
-                    5. Fill in the form above and click "Add month"
+                    <strong>Active month:</strong> {activeMonth.label}<br/>
+                    <strong>Sheet ID:</strong> <code style={{fontSize:10}}>{activeMonth.sheetId}</code><br/>
+                    <strong>Total months available:</strong> {ALL_MONTHS.length}<br/>
+                    <strong>Tab names:</strong> {Object.values(activeMonth.tabs).join(', ')}
                   </div>
                 </div>
               </div>
@@ -917,6 +936,182 @@ export default function App() {
                 </div>
               </div>
             )}
+
+            {/* ═══ WEBSITE DEVELOPMENT ═══ */}
+            {activeSection === "website" && (() => {
+              const web = data.website || [];
+              const completed = web.filter(p => p.status === 'Completed' || p.progress === 100);
+              const inProgress = web.filter(p => p.progress > 0 && p.progress < 100);
+              const pending = web.filter(p => p.progress === 0 && p.status !== 'Completed');
+              const typeCounts = {};
+              web.forEach(p => { typeCounts[p.projectType] = (typeCounts[p.projectType]||0)+1; });
+              const pendingCounts = {};
+              web.forEach(p => { if(p.pendingFrom) pendingCounts[p.pendingFrom] = (pendingCounts[p.pendingFrom]||0)+1; });
+              const typeColors = {'Conceptual Portfolio':'#1565C0','Dynamic with Blogs':'#D85A30','Basic Portfolio':'#6A1B9A'};
+
+              return (
+              <div className="space-y-6">
+                {/* KPI ROW */}
+                <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
+                  <KPICard label="Total projects" value={web.length} sub="Website development" icon="◐" />
+                  <KPICard label="Completed" value={completed.length} sub={`${web.length>0?Math.round(completed.length/web.length*100):0}% done`} icon="✓" />
+                  <KPICard label="In progress" value={inProgress.length} sub="Active development" icon="▶" accent />
+                  <KPICard label="Pending" value={pending.length} sub="Not started yet" icon="◷" />
+                  <KPICard label="Avg. progress" value={`${web.length>0?Math.round(web.reduce((s,p)=>s+p.progress,0)/web.length):0}%`} sub="Across all projects" icon="◎" />
+                </div>
+
+                {/* CHARTS ROW */}
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                  {/* Status distribution */}
+                  <div className="rounded-xl p-5 border border-slate-200 bg-white shadow-sm dark:shadow-none dark:border-white/5 dark:bg-white/[0.02]">
+                    <h3 className="text-sm font-semibold mb-4 opacity-70">Status distribution</h3>
+                    <div className="flex items-center justify-center">
+                      <DonutChart value={completed.length} max={web.length||1} size={100} color="#10B981" label={`${completed.length} completed`} isDark={isDark} />
+                      <DonutChart value={inProgress.length} max={web.length||1} size={100} color="#F97316" label={`${inProgress.length} in progress`} isDark={isDark} />
+                      <DonutChart value={pending.length} max={web.length||1} size={100} color="#DC2626" label={`${pending.length} pending`} isDark={isDark} />
+                    </div>
+                  </div>
+
+                  {/* Project types */}
+                  <div className="rounded-xl p-5 border border-slate-200 bg-white shadow-sm dark:shadow-none dark:border-white/5 dark:bg-white/[0.02]">
+                    <h3 className="text-sm font-semibold mb-4 opacity-70">Project types</h3>
+                    <div className="space-y-3">
+                      {Object.entries(typeCounts).map(([type,count]) => (
+                        <div key={type} className="flex items-center gap-3">
+                          <span className="text-xs w-36 text-right opacity-50 truncate flex-shrink-0">{type}</span>
+                          <MiniBar value={count} max={web.length} color={typeColors[type]||'#6B7280'} />
+                          <span className="text-sm font-bold" style={{color:typeColors[type]||'#6B7280'}}>{count}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Pending from */}
+                  <div className="rounded-xl p-5 border border-slate-200 bg-white shadow-sm dark:shadow-none dark:border-white/5 dark:bg-white/[0.02]">
+                    <h3 className="text-sm font-semibold mb-4 opacity-70">Pending from</h3>
+                    <div className="space-y-3">
+                      {Object.entries(pendingCounts).map(([person,count]) => (
+                        <div key={person} className="flex items-center gap-3">
+                          <span className="text-xs w-24 text-right opacity-50 truncate flex-shrink-0">{person||"TBD"}</span>
+                          <MiniBar value={count} max={web.length} color={person==='Tanmay'?'#D85A30':person==='Client'?'#1565C0':person==='Completed'?'#10B981':'#6B7280'} />
+                          <span className="text-sm font-bold opacity-70">{count}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                {/* PROJECT PROGRESS BARS */}
+                <div className="rounded-xl p-5 border border-slate-200 bg-white shadow-sm dark:shadow-none dark:border-white/5 dark:bg-white/[0.02]">
+                  <h3 className="text-sm font-semibold mb-4 opacity-70">Project progress</h3>
+                  <div className="space-y-3">
+                    {[...web].sort((a,b) => b.progress - a.progress).map(p => (
+                      <div key={p.client} className="flex items-center gap-3">
+                        <span className="text-xs w-32 text-right opacity-60 truncate flex-shrink-0 font-medium">{p.client}</span>
+                        <div className="flex-1 relative">
+                          <div className="h-6 rounded-full overflow-hidden" style={{background:isDark?'rgba(255,255,255,0.04)':'rgba(0,0,0,0.05)'}}>
+                            <div className="h-full rounded-full transition-all flex items-center justify-end pr-2" style={{
+                              width: `${Math.max(p.progress, 8)}%`,
+                              background: p.progress === 100 ? 'linear-gradient(90deg, #10B981, #059669)' : p.progress >= 50 ? 'linear-gradient(90deg, #F97316, #EA580C)' : p.progress > 0 ? 'linear-gradient(90deg, #EAB308, #CA8A04)' : 'linear-gradient(90deg, #DC2626, #B91C1C)'
+                            }}>
+                              <span className="text-[10px] font-bold text-white">{p.progress}%</span>
+                            </div>
+                          </div>
+                        </div>
+                        <StatusBadge status={p.status || (p.progress === 0 ? "Pending" : `${p.progress}%`)} />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* PROJECT TIMELINE */}
+                <div className="rounded-xl p-5 border border-slate-200 bg-white shadow-sm dark:shadow-none dark:border-white/5 dark:bg-white/[0.02]">
+                  <h3 className="text-sm font-semibold mb-4 opacity-70">Project timeline</h3>
+                  <div className="space-y-1">
+                    {web.filter(p => p.startDate || p.deadline).map((p,i) => (
+                      <div key={i} className="flex items-center gap-2 py-2 border-b border-slate-100 dark:border-white/5 last:border-0">
+                        <div style={{width:4,height:40,borderRadius:2,background:p.progress===100?'#10B981':p.progress>0?'#F97316':'#DC2626',flexShrink:0}}/>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span className="text-sm font-medium truncate">{p.client}</span>
+                            <span className="text-[10px] px-2 py-0.5 rounded-full border bg-slate-100 text-slate-600 border-slate-200 dark:bg-white/5 dark:text-zinc-400 dark:border-white/10">{p.projectType}</span>
+                          </div>
+                          <div className="flex items-center gap-3 mt-1 text-xs opacity-50">
+                            {p.startDate && <span>Start: <span className="font-medium opacity-80">{p.startDate}</span></span>}
+                            {p.deadline && <span>Deadline: <span className="font-medium opacity-80">{p.deadline}</span></span>}
+                            {p.currentStage && <span>Stage: <span className="font-medium opacity-80">{p.currentStage}</span></span>}
+                          </div>
+                        </div>
+                        <div className="text-right flex-shrink-0">
+                          <div className="text-lg font-bold" style={{color:p.progress===100?'#10B981':p.progress>=50?'#F97316':p.progress>0?'#EAB308':'#DC2626'}}>{p.progress}%</div>
+                          {p.pendingFrom && <div className="text-[10px] opacity-50">Pending: {p.pendingFrom}</div>}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* KANBAN BOARD */}
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                  {/* Completed */}
+                  <div className="rounded-xl border border-emerald-200 bg-emerald-50 dark:border-emerald-500/20 dark:bg-emerald-500/5 p-4">
+                    <h3 className="text-sm font-semibold text-emerald-700 dark:text-emerald-400 mb-3">✓ Completed ({completed.length})</h3>
+                    <div className="space-y-2">{completed.map(p=>(
+                      <div key={p.client} className="p-3 rounded-lg bg-white border border-emerald-100 shadow-sm dark:shadow-none dark:bg-black/30 dark:border-emerald-500/10 text-slate-800 dark:text-[#E8E8EC]">
+                        <div className="text-sm font-medium">{p.client}</div>
+                        <div className="text-xs opacity-60 mt-1">{p.projectType} · {p.revisions?`${p.revisions} revisions`:''} {p.remarks?`· ${p.remarks}`:''}</div>
+                      </div>
+                    ))}</div>
+                  </div>
+                  {/* In Progress */}
+                  <div className="rounded-xl border border-amber-200 bg-amber-50 dark:border-amber-500/20 dark:bg-amber-500/5 p-4">
+                    <h3 className="text-sm font-semibold text-amber-700 dark:text-amber-400 mb-3">▶ In progress ({inProgress.length})</h3>
+                    <div className="space-y-2">{inProgress.map(p=>(
+                      <div key={p.client} className="p-3 rounded-lg bg-white border border-amber-100 shadow-sm dark:shadow-none dark:bg-black/30 dark:border-amber-500/10 text-slate-800 dark:text-[#E8E8EC]">
+                        <div className="flex justify-between items-start"><div className="text-sm font-medium">{p.client}</div><span className="text-sm font-bold text-amber-600 dark:text-amber-400">{p.progress}%</span></div>
+                        <div className="text-xs opacity-60 mt-1">{p.projectType} · {p.currentStage} · Pending: {p.pendingFrom}</div>
+                        <div className="mt-2"><MiniBar value={p.progress} max={100} color="#F97316"/></div>
+                      </div>
+                    ))}</div>
+                  </div>
+                  {/* Pending */}
+                  <div className="rounded-xl border border-red-200 bg-red-50 dark:border-red-500/20 dark:bg-red-500/5 p-4">
+                    <h3 className="text-sm font-semibold text-red-700 dark:text-red-400 mb-3">◷ Pending ({pending.length})</h3>
+                    <div className="space-y-2">{pending.map(p=>(
+                      <div key={p.client} className="p-3 rounded-lg bg-white border border-red-100 shadow-sm dark:shadow-none dark:bg-black/30 dark:border-red-500/10 text-slate-800 dark:text-[#E8E8EC]">
+                        <div className="text-sm font-medium">{p.client}</div>
+                        <div className="text-xs opacity-60 mt-1">{p.projectType} {p.deadline?`· Deadline: ${p.deadline}`:''} {p.pendingFrom?`· Pending: ${p.pendingFrom}`:''}</div>
+                      </div>
+                    ))}</div>
+                  </div>
+                </div>
+
+                {/* FULL TABLE */}
+                <div className="rounded-xl p-5 border border-slate-200 bg-white shadow-sm dark:shadow-none dark:border-white/5 dark:bg-white/[0.02] overflow-x-auto">
+                  <h3 className="text-sm font-semibold mb-4 opacity-70">All website projects</h3>
+                  <table className="w-full text-xs">
+                    <thead><tr className="border-b border-slate-200 dark:border-white/10 text-left">
+                      <th className="py-2 px-2 opacity-40">#</th><th className="py-2 px-2 opacity-40">Client</th><th className="py-2 px-2 opacity-40">Type</th><th className="py-2 px-2 opacity-40">Start</th><th className="py-2 px-2 opacity-40">Current stage</th><th className="py-2 px-2 opacity-40">Progress</th><th className="py-2 px-2 opacity-40">Deadline</th><th className="py-2 px-2 opacity-40">Pending</th><th className="py-2 px-2 opacity-40">Revisions</th><th className="py-2 px-2 opacity-40">Remarks</th>
+                    </tr></thead>
+                    <tbody>{web.map((p,i)=>(
+                      <tr key={i} className="border-b border-slate-100 dark:border-white/5 hover:bg-slate-50 dark:hover:bg-white/5 transition-colors">
+                        <td className="py-2 px-2 opacity-40">{p.sr}</td>
+                        <td className="py-2 px-2 font-medium">{p.client}</td>
+                        <td className="py-2 px-2"><span className="text-[10px] px-2 py-0.5 rounded-full" style={{background:(typeColors[p.projectType]||'#6B7280')+'20',color:typeColors[p.projectType]||'#6B7280'}}>{p.projectType}</span></td>
+                        <td className="py-2 px-2 opacity-70">{p.startDate||'—'}</td>
+                        <td className="py-2 px-2 opacity-70 max-w-[150px] truncate">{p.currentStage||'—'}</td>
+                        <td className="py-2 px-2"><div className="flex items-center gap-2"><MiniBar value={p.progress} max={100} color={p.progress===100?'#10B981':p.progress>=50?'#F97316':'#DC2626'}/><span className="text-[10px] font-bold opacity-60">{p.progress}%</span></div></td>
+                        <td className="py-2 px-2 opacity-70">{p.deadline||'—'}</td>
+                        <td className="py-2 px-2 opacity-70">{p.pendingFrom||'—'}</td>
+                        <td className="py-2 px-2 text-center font-bold">{p.revisions||'—'}</td>
+                        <td className="py-2 px-2 opacity-60 max-w-[120px] truncate">{p.remarks||'—'}</td>
+                      </tr>
+                    ))}</tbody>
+                  </table>
+                </div>
+              </div>
+              );
+            })()}
 
             {/* ═══ CLIENTS ═══ */}
             {activeSection === "clients" && (
