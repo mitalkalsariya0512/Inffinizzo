@@ -409,14 +409,22 @@ export default function App() {
         contentPlanner: "Content Planner_Post",
         website: "Website",
       }
-    },
-    // ── ADD NEW MONTHS BELOW ──
-    // {
-    //   id: "may2026",
-    //   label: "May 2026",
-    //   sheetId: "PASTE_MAY_SHEET_ID_HERE",
-    //   tabs: { postTeam: "Daily Report - Post Team", videoTeam: "Daily Report - Video Team", stockData: "Stock", socialMedia: "Social Media Team Report", shootSchedule: "Shoot Schedule", clientReport: "Client Report.", uploadCalendar: "Uploading Calender", contentPlanner: "Content Planner_Post" }
-    // },
+    },{
+  id: "may2026",
+  label: "May 2026",
+  sheetId: "PASTE_YOUR_SHEET_ID_HERE",
+  tabs: {
+    postTeam: "Daily Report - Post Team",
+    videoTeam: "Daily Report - Video Team",
+    stockData: "Stock",
+    socialMedia: "Social Media Team Report",
+    shootSchedule: "Shoot Schedule",
+    clientReport: "Client Report.",
+    uploadCalendar: "Uploading Calender",
+    contentPlanner: "Content Planner_Post",
+    website: "Website",
+  }
+},
   ];
 
   // Default to the LAST month (most recent) — works the same on every browser/device
